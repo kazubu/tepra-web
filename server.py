@@ -41,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.parse
 import uuid
 from datetime import datetime
@@ -138,14 +139,29 @@ def build_driver_args(opts):
     return args, notes
 
 
+def log(message):
+    """サーバを起動したターミナルに 1 行ログを出す (HTTP ログと同じ出力先)。"""
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", file=sys.stderr, flush=True)
+
+
 def run_driver(args, timeout=CLI_TIMEOUT):
-    """ドライバを実行し (returncode, stdout, stderr) を返す。"""
-    proc = subprocess.run(
-        args,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    """ドライバを実行し (returncode, stdout, stderr) を返す。
+
+    ドライバの標準エラー出力はここで捕捉してしまうので、そのままでは
+    どこにも残らない。印刷の診断 (プリンタが動作中になったか、何秒で
+    idle に戻ったか) に要るので、ターミナルにも出す。
+    """
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log(f"driver timeout after {timeout}s: {' '.join(args[1:])}")
+        raise
+    took = time.monotonic() - t0
+    log(f"driver rc={proc.returncode} in {took:.1f}s: {' '.join(args[1:])}")
+    for line in (proc.stderr or "").splitlines():
+        if line.strip():
+            log(f"  | {line}")
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -449,6 +465,7 @@ def _merge_worker(job, labels, opts):
         else:
             job["phase"] = f"{len(labels)} 件を 1 ジョブとして送信・印刷中"
             r = do_print_labels(opts, labels, cancel=job["_cancel"])
+            job["detail"] = (r.get("detail") or "").strip() or None
             if r.get("ok"):
                 job["done"] = len(labels)
             elif r.get("cancelled"):
@@ -476,6 +493,8 @@ def _merge_worker(job, labels, opts):
         "done": job["done"],
         "total": job["total"],
         "error": error,
+        # ドライバの状態ログ (印刷されなかったときの切り分け用)
+        "detail": job.get("detail"),
     })
 
 
@@ -492,6 +511,7 @@ def start_merge_job(labels, opts):
         "failed_label": None,
         "error": None,
         "phase": None,
+        "detail": None,
         "_cancel": threading.Event(),
     }
     with MERGE_JOBS_LOCK:
@@ -1930,7 +1950,7 @@ async function pollMergeJob() {
     mergeJobId = null;
     $("btn-merge-print").disabled = false;
     $("btn-merge-cancel").disabled = true;
-    if (r.state === "done") setMsg($("merge-msg"), r.done + " 件を印刷しました", true);
+    if (r.state === "done") setMsg($("merge-msg"), r.done + " 件を印刷しました" + (r.detail ? "\n" + r.detail : ""), true);
     else if (r.state === "cancelled") setMsg($("merge-msg"), "送信前に取り消しました。印刷していません", false);
     else setMsg($("merge-msg"), "印刷できませんでした: " + r.error, false);
     loadHistory();
