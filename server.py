@@ -120,6 +120,10 @@ def build_driver_args(opts):
     cut = str(opts.get("cut", "full") or "full")
     if cut in ("full", "half", "none"):
         args += ["--cut", cut]
+    if opts.get("cable"):
+        # ケーブル表示ラベル: テープ上部の印刷可能エリアだけに印字する
+        # (24mm は上部 8mm、36mm は上部 13mm)。
+        args += ["--cable"]
     copies = str(opts.get("copies", "") or "").strip()
     if copies and copies != "1":
         # 1 ジョブ内で同じラベルを複数枚印刷する (カット設定に従って切り分け)。
@@ -1043,6 +1047,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <span class="note">印刷内容の周囲に枠を描きます。</span>
 </div>
 <div class="row">
+  <label><input type="checkbox" id="cable"> ケーブル表示ラベル</label>
+  <span class="note">テープ上部の印刷可能エリアだけに印字します（24mm は上部 8mm、36mm は上部 13mm）。残りはケーブルに巻く透明部分です。</span>
+</div>
+<div class="row">
   <button id="btn-tape-detect" type="button" aria-describedby="tape-note">装着テープを確認</button>
   <span id="tape-status" role="status">装着テープ: 未確認</span>
 </div>
@@ -1242,6 +1250,7 @@ function opts() {
     frame_width: $("frame_width").value,
     cut: $("cut").value,
     copies: $("copies").value,
+    cable: $("cable").checked,
   };
 }
 
@@ -1654,6 +1663,7 @@ function applyFormState(t) {
   $("frame_width").value = t.frame_width || "2";
   $("cut").value = t.cut || "full";
   $("copies").value = t.copies || "1";
+  $("cable").checked = !!t.cable;
   $("text").value = t.text || "";
   syncRatioInputs();
   if (t.ratios) {
