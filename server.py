@@ -1013,6 +1013,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <label for="margin_preset">余白</label>
     <select id="margin_preset">
       <option value="none">なし（左1 / 右0）</option>
+      <option value="xsmall">極小（左2 / 右1）</option>
       <option value="small" selected>小（左4 / 右3）</option>
       <option value="medium">中（左6 / 右5）</option>
       <option value="large">大（左8 / 右7）</option>
@@ -1262,7 +1263,7 @@ function opts() {
 }
 
 // 余白プリセット (左, 右 mm)。「カスタム」のときは入力欄の値を使う。
-const MARGIN_PRESETS = {none: ["1", "0"], small: ["4", "3"], medium: ["6", "5"], large: ["8", "7"]};
+const MARGIN_PRESETS = {none: ["1", "0"], xsmall: ["2", "1"], small: ["4", "3"], medium: ["6", "5"], large: ["8", "7"]};
 function currentMargins() {
   const preset = $("margin_preset").value;
   if (preset in MARGIN_PRESETS) return MARGIN_PRESETS[preset];
