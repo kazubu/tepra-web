@@ -208,6 +208,33 @@ def do_print(opts, text):
     return do_print_labels(opts, [text])
 
 
+def do_feed(mm, cut):
+    """空白テープを mm だけ送る (公式ドライバの「テープ送り」相当)。cut は full/none。"""
+    try:
+        mm = float(mm)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "送り長は数値で指定してください"}
+    if not 1 <= mm <= 500:
+        return {"ok": False, "error": "送り長は 1〜500mm で指定してください"}
+    cut = cut if cut in ("full", "half", "none") else "none"
+    args = [DRIVER, "--model", MODEL, "--feed-mm", str(mm), "--cut", cut, "--skip-preview"]
+    if VID:
+        args += ["--vid", VID]
+    if PID:
+        args += ["--pid", PID]
+    with tempfile.TemporaryDirectory() as td:
+        if DRY_RUN:
+            args += ["--no-print", "--dump", str(Path(td) / "feed.prn")]
+        else:
+            args += ["--wait"]
+        with CLI_LOCK:
+            rc, _out, err = run_driver(args, timeout=CLI_TIMEOUT + 60)
+    if rc != 0:
+        return {"ok": False, "error": err.strip() or f"driver exited {rc}"}
+    what = "送ってカットしました" if cut != "none" else "送りました"
+    return {"ok": True, "message": f"テープを {mm:g}mm {what}" + ("（DRY_RUN）" if DRY_RUN else "")}
+
+
 def do_print_labels(opts, labels, cancel=None):
     """複数ラベルを 1 ジョブとして印刷する (DRY_RUN 時はダンプ)。
 
@@ -646,6 +673,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path == "/api/preview":
                 self._send_json(do_preview(data.get("opts", {}), data.get("text", "")))
+            elif self.path == "/api/feed":
+                self._send_json(do_feed(data.get("mm", 10), data.get("cut", "none")))
             elif self.path == "/api/print":
                 opts = data.get("opts", {})
                 text = data.get("text", "")
@@ -1017,6 +1046,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button id="btn-tape-detect" type="button" aria-describedby="tape-note">装着テープを確認</button>
   <span id="tape-status" role="status">装着テープ: 未確認</span>
 </div>
+<div class="row">
+  <div class="field" style="flex: 0 1 8em">
+    <label for="feed_mm">送り長(mm)</label>
+    <input id="feed_mm" type="number" min="1" max="500" step="1" inputmode="numeric" value="10">
+  </div>
+  <button id="btn-feed" type="button">テープを送る</button>
+  <button id="btn-feed-cut" type="button">送ってカット</button>
+  <span id="feed-status" role="status"></span>
+</div>
 <p class="note" id="tape-note">テープ幅「自動」ではプレビュー/印刷のたびに本体から幅を取得します。</p>
 <div class="field">
   <label for="text">印刷テキスト</label>
@@ -1295,6 +1333,10 @@ async function detectTape() {
       } else {
         s = "装着テープ: 印刷できない幅です (index " + r.index + ")";
       }
+      if (r.device_id) {
+        const mdl = (String(r.device_id).match(/MDL:([^;]+)/) || [])[1];
+        if (mdl) s += " / 機種: " + mdl.trim();
+      }
       if (r.mock) s += "（開発用の仮の値）";
       el.textContent = s;
       el.className = r.supported ? "ok" : "err";
@@ -1308,6 +1350,23 @@ async function detectTape() {
   }
 }
 $("btn-tape-detect").onclick = detectTape;
+// テープ送り: 空白行だけのジョブを送る (カットなし / フルカット)。
+async function feedTape(cut) {
+  const el = $("feed-status");
+  for (const id of ["btn-feed", "btn-feed-cut"]) $(id).disabled = true;
+  el.className = ""; el.textContent = "送っています";
+  try {
+    const r = await post("/api/feed", {mm: $("feed_mm").value, cut});
+    el.textContent = r.ok ? r.message : "テープを送れませんでした: " + r.error;
+    el.className = r.ok ? "ok" : "err";
+  } catch (e) {
+    el.textContent = "テープを送れませんでした: " + e; el.className = "err";
+  } finally {
+    for (const id of ["btn-feed", "btn-feed-cut"]) $(id).disabled = false;
+  }
+}
+$("btn-feed").onclick = () => feedTape("none");
+$("btn-feed-cut").onclick = () => feedTape("full");
 
 async function init() {
   const cfg = await (await fetch("/api/config")).json();
