@@ -1,0 +1,6 @@
+# built driver binary (cargo build --release in driver/, then copy here)
+/tpsr3700
+# runtime data written by server.py
+/history.json
+/templates.json
+__pycache__/
