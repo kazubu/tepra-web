@@ -168,6 +168,19 @@ def run_driver(args, timeout=CLI_TIMEOUT, on_line=None):
     watchdog = threading.Timer(timeout, on_timeout)
     watchdog.start()
     err_lines = []
+    # 同じ行の繰り返し (ラベルごとに出る警告など) はまとめる。100 件の
+    # 差し込み印刷で同じ行が 100 回流れるのを避けるため。
+    repeat = [None, 0]
+
+    def flush_repeat():
+        line, count = repeat
+        if line is None:
+            return
+        suffix = f" (×{count})" if count > 1 else ""
+        err_lines.append(line if count == 1 else f"{line}{suffix}")
+        log(f"  | {line}{suffix}")
+        repeat[0], repeat[1] = None, 0
+
     try:
         for line in proc.stderr:
             line = line.rstrip("\n")
@@ -175,9 +188,14 @@ def run_driver(args, timeout=CLI_TIMEOUT, on_line=None):
             # 数が多く、要約だけで足りるため。
             if on_line is not None and on_line(line):
                 continue
-            err_lines.append(line)
-            if line.strip():
-                log(f"  | {line}")
+            if not line.strip():
+                continue
+            if line == repeat[0]:
+                repeat[1] += 1
+                continue
+            flush_repeat()
+            repeat[0], repeat[1] = line, 1
+        flush_repeat()
         rc = proc.wait()
     finally:
         watchdog.cancel()
