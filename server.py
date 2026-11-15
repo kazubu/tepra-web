@@ -208,12 +208,15 @@ def do_print(opts, text):
     return do_print_labels(opts, [text])
 
 
-def do_print_labels(opts, labels):
+def do_print_labels(opts, labels, cancel=None):
     """複数ラベルを 1 ジョブとして印刷する (DRY_RUN 時はダンプ)。
 
     ドライバの --labels-file (ASCII RS 区切り) に渡す。ジョブ内では
     ラベルごとに L/T/ラスタのブロックが並び、カット設定 (ハーフカット等)
     がラベル間にも適用される。
+
+    cancel (threading.Event) が渡された場合、CLI_LOCK を取った直後 (ドライバ
+    起動前) にも確認し、セットされていれば送信せずに cancelled を返す。
     """
     args, notes = build_driver_args(opts)
     with tempfile.TemporaryDirectory() as td:
@@ -227,6 +230,8 @@ def do_print_labels(opts, labels):
             dump_path = Path(td) / "job.prn"
             full = args + ["--skip-preview", "--no-print", "--dump", str(dump_path)] + target
             with CLI_LOCK:
+                if cancel is not None and cancel.is_set():
+                    return {"ok": False, "cancelled": True, "error": "送信前に取り消しました"}
                 rc, _out, err = run_driver(full)
             if rc != 0:
                 return {"ok": False, "error": err.strip() or f"driver exited {rc}"}
@@ -240,6 +245,8 @@ def do_print_labels(opts, labels):
         # 次のジョブを印刷中に送らないため (CLI_LOCK と併用)。
         full = args + ["--skip-preview", "--wait"] + target
         with CLI_LOCK:
+            if cancel is not None and cancel.is_set():
+                return {"ok": False, "cancelled": True, "error": "送信前に取り消しました"}
             rc, _out, err = run_driver(full, timeout=CLI_TIMEOUT + 180 + 30 * len(labels))
         if rc != 0:
             return {"ok": False, "error": err.strip() or f"driver exited {rc}"}
@@ -402,19 +409,26 @@ def _merge_worker(job, labels, opts):
     # 送信前にしか効かない。
     state = "done"
     error = None
-    if job["_cancel"].is_set():
-        state = "cancelled"
-    else:
-        job["phase"] = f"{len(labels)} 件を 1 ジョブとして送信・印刷中"
-        r = do_print_labels(opts, labels)
-        if r.get("ok"):
-            job["done"] = len(labels)
+    try:
+        if job["_cancel"].is_set():
+            state = "cancelled"
         else:
-            state = "error"
-            error = r.get("error", "unknown error")
-            job["failed_index"] = 0
-            job["failed_label"] = labels[0]
-            job["error"] = error
+            job["phase"] = f"{len(labels)} 件を 1 ジョブとして送信・印刷中"
+            r = do_print_labels(opts, labels, cancel=job["_cancel"])
+            if r.get("ok"):
+                job["done"] = len(labels)
+            elif r.get("cancelled"):
+                state = "cancelled"
+            else:
+                state = "error"
+                error = r.get("error", "unknown error")
+    except Exception as e:  # タイムアウト等でもジョブを「実行中」のまま残さない
+        state = "error"
+        error = f"{type(e).__name__}: {e}"
+    if state == "error":
+        job["failed_index"] = 0
+        job["failed_label"] = labels[0] if labels else None
+        job["error"] = error
     job["state"] = state
     job["phase"] = None
     job["current_index"] = None
@@ -1753,17 +1767,25 @@ $("btn-labels").onclick = async () => {
   const mx = $("matrix");
   mx.innerHTML = "";
   if (r.matrix) {
+    // 系列名や値はユーザー入力なので、HTML 文字列にせず DOM API で組み立てる。
     const tbl = document.createElement("table");
     tbl.className = "matrix";
-    let html = "<tr><th scope=\"col\">" + r.matrix.row_name + " \\ " + r.matrix.col_name + "</th>";
-    for (const c of r.matrix.cols) html += "<th scope=\"col\">" + c + "</th>";
-    html += "</tr>";
+    const cellEl = (tag, textValue, scope) => {
+      const el = document.createElement(tag);
+      if (scope) el.scope = scope;
+      el.textContent = textValue;
+      return el;
+    };
+    const headRow = document.createElement("tr");
+    headRow.appendChild(cellEl("th", r.matrix.row_name + " \\ " + r.matrix.col_name, "col"));
+    for (const c of r.matrix.cols) headRow.appendChild(cellEl("th", c, "col"));
+    tbl.appendChild(headRow);
     r.matrix.rows.forEach((rv, ri) => {
-      html += "<tr><th scope=\"row\">" + rv + "</th>";
-      for (const cell of r.matrix.cells[ri]) html += "<td>" + cell.replace(/</g, "&lt;") + "</td>";
-      html += "</tr>";
+      const tr = document.createElement("tr");
+      tr.appendChild(cellEl("th", rv, "row"));
+      for (const cell of r.matrix.cells[ri]) tr.appendChild(cellEl("td", cell));
+      tbl.appendChild(tr);
     });
-    tbl.innerHTML = html;
     mx.appendChild(tbl);
   }
 };
