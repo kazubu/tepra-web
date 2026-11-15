@@ -121,9 +121,12 @@ def build_driver_args(opts):
     if cut in ("full", "half", "none"):
         args += ["--cut", cut]
     if opts.get("cable"):
-        # ケーブル表示ラベル: テープ上部の印刷可能エリアだけに印字する
-        # (24mm は上部 8mm、36mm は上部 13mm)。
+        # ケーブル表示ラベル: テープ上端から測った印刷可能エリア内だけに
+        # 印字する (既定は 24mm = 8mm、36mm = 13mm)。
         args += ["--cable"]
+        cable_mm = str(opts.get("cable_mm", "") or "").strip()
+        if cable_mm:
+            args += ["--cable-mm", cable_mm]
     copies = str(opts.get("copies", "") or "").strip()
     if copies and copies != "1":
         # 1 ジョブ内で同じラベルを複数枚印刷する (カット設定に従って切り分け)。
@@ -1048,7 +1051,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <div class="row">
   <label><input type="checkbox" id="cable"> ケーブル表示ラベル</label>
-  <span class="note">テープ上部の印刷可能エリアだけに印字します（24mm は上部 8mm、36mm は上部 13mm）。残りはケーブルに巻く透明部分です。</span>
+  <div class="field" style="flex: 0 1 11em">
+    <label for="cable_mm">印刷エリア(mm)</label>
+    <input id="cable_mm" type="number" min="1" max="50" step="0.5" inputmode="decimal" placeholder="既定" disabled>
+  </div>
+  <span class="note">テープ上端から測った印刷エリア内だけに印字します（既定は 24mm が 8mm、36mm が 13mm）。残りはケーブルに巻く透明部分です。はみ出す場合は値を小さくしてください。</span>
 </div>
 <div class="row">
   <button id="btn-tape-detect" type="button" aria-describedby="tape-note">装着テープを確認</button>
@@ -1251,6 +1258,7 @@ function opts() {
     cut: $("cut").value,
     copies: $("copies").value,
     cable: $("cable").checked,
+    cable_mm: $("cable_mm").value,
   };
 }
 
@@ -1358,6 +1366,13 @@ async function detectTape() {
     el.className = "err";
   }
 }
+// 印刷エリアの入力は「ケーブル表示ラベル」のときだけ有効にする。
+function syncCableInput() {
+  $("cable_mm").disabled = !$("cable").checked;
+}
+$("cable").addEventListener("change", syncCableInput);
+syncCableInput();
+
 $("btn-tape-detect").onclick = detectTape;
 // テープ送り: 空白行だけのジョブを送る (カットなし / フルカット)。
 async function feedTape(cut) {
@@ -1664,6 +1679,8 @@ function applyFormState(t) {
   $("cut").value = t.cut || "full";
   $("copies").value = t.copies || "1";
   $("cable").checked = !!t.cable;
+  $("cable_mm").value = t.cable_mm || "";
+  syncCableInput();
   $("text").value = t.text || "";
   syncRatioInputs();
   if (t.ratios) {
