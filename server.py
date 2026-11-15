@@ -23,7 +23,9 @@ Python 標準ライブラリのみで動作する単一ファイルの Web ア�
   TEPRA_FAKE_TAPE    開発用モック: テープ幅取得 (GET /api/tape) が実機を
                      問い合わせず、この mm 数を装着テープとして返す。
                      UI 確認専用で、印刷には影響しない (既定: 無効)
-  TEPRA_DRY_TAPE_MM  DRY_RUN 時、テープ幅「自動」の代わりに使う幅 (既定 18)
+  TEPRA_DRY_TAPE_MM  DRY_RUN 時に実機の代わりに仮定するテープ幅 (既定 18)。
+                     テープ幅「自動」の印刷/プレビューのほか、テープ送りと
+                     装着テープの確認でも使う (実機を開かずに済ませるため)
   TEPRA_TEMPLATES    テンプレート保存先 JSON (既定: ./templates.json)
   TEPRA_HISTORY      印刷履歴の保存先 JSON (既定: ./history.json)
   TEPRA_FONTS_DIR    フォント置き場 (既定: ./fonts)
@@ -285,6 +287,10 @@ def do_feed(mm, cut):
         return {"ok": False, "error": "送り長は 1〜500mm で指定してください"}
     cut = cut if cut in ("full", "half", "none") else "none"
     args = [DRIVER, "--model", MODEL, "--feed-mm", str(mm), "--cut", cut, "--skip-preview"]
+    if DRY_RUN:
+        # 幅を渡さないとドライバが自動検出のため USB を開いてしまい、
+        # 実機なしの DRY_RUN で失敗する (印刷と同じ仮定の幅を使う)。
+        args += ["--tape-mm", DRY_TAPE_MM]
     if VID:
         args += ["--vid", VID]
     if PID:
@@ -371,23 +377,27 @@ def do_print_labels(opts, labels, cancel=None, progress=None):
         return {"ok": True, "message": "印刷しました。", "notes": notes, "detail": err.strip()}
 
 
-# ドライバのテープ幅インデックス表 (docs/protocol.md 1.5)
-TAPE_INDEX_BY_MM = {4: 0, 6: 1, 9: 2, 12: 3, 18: 4, 24: 5, 36: 6, 50: 7}
+# ドライバのテープ幅インデックス表 (docs/protocol.md 1.5)。4mm は 0 では
+# なく 11 で、0 は「テープなし」(実機で確認)。50mm に対応する値は不明。
+TAPE_INDEX_BY_MM = {4: 11, 6: 1, 9: 2, 12: 3, 18: 4, 24: 5, 36: 6}
 SUPPORTED_TAPE_MM = (4, 6, 9, 12, 18, 24, 36)
 
 
 def do_detect_tape():
     """本体に装着されているテープ幅をドライバの --detect-tape で取得する。
 
-    TEPRA_FAKE_TAPE が設定されている場合は実機を問い合わせず、
-    開発用モックとしてその値を返す (mock: true を明示する)。
+    TEPRA_FAKE_TAPE が設定されている場合、および TEPRA_DRY_RUN=1 の
+    場合は実機を問い合わせず、開発用モックとして幅を返す
+    (mock: true を明示する)。DRY_RUN が仮定する幅は印刷/プレビューと
+    同じ TEPRA_DRY_TAPE_MM。
     実機がない/見つからない場合はドライバのエラーをそのまま返す。
     """
-    if FAKE_TAPE:
+    mock_mm = FAKE_TAPE or (DRY_TAPE_MM if DRY_RUN else "")
+    if mock_mm:
         try:
-            mm = int(FAKE_TAPE)
+            mm = int(mock_mm)
         except ValueError:
-            return {"ok": False, "error": f"TEPRA_FAKE_TAPE の値が不正です: {FAKE_TAPE}"}
+            return {"ok": False, "error": f"モックのテープ幅の値が不正です: {mock_mm}"}
         return {
             "ok": True,
             "tape_mm": mm,

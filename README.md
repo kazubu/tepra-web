@@ -137,7 +137,8 @@ TEPRA_PID=<手順2の値> python3 server.py
 | `TEPRA_PID` / `TEPRA_VID` | USB ID (16進) | ドライバ既定 (0d8a:0103) |
 | `TEPRA_MODEL` | 機種 `sr3900p` / `sr3700p` (解像度とテープ幅ごとのドット数、ジョブ内の機種バイト) | `sr3900p` |
 | `TEPRA_PORT` | 待ち受けポート | 8090 |
-| `TEPRA_DRY_RUN` | `1` で印刷の代わりにジョブ生成のみ | 無効 |
+| `TEPRA_DRY_RUN` | `1` で印刷の代わりにジョブ生成のみ。テープ送りと装着テープの確認も実機を使わず、`TEPRA_DRY_TAPE_MM` の幅を仮定する (実機なしで UI を一通り確認できる) | 無効 |
+| `TEPRA_DRY_TAPE_MM` | `TEPRA_DRY_RUN` 時に仮定するテープ幅 (mm) | 18 |
 | `TEPRA_FAKE_TAPE` | 開発用モック: テープ幅取得が実機を問い合わせずこの mm 数を返す (UI 確認専用、印刷には影響しない) | 無効 |
 | `TEPRA_TEMPLATES` | テンプレート保存先 JSON | `./templates.json` |
 | `TEPRA_HISTORY` | 印刷履歴の保存先 JSON (直近100件) | `./history.json` |
