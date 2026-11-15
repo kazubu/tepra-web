@@ -1119,7 +1119,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="columns">
 <div class="col">
 
-<section class="card">
+<section class="card" id="label-section">
 <h2 id="h-label">ラベル</h2>
 <div class="row">
   <div class="field">
@@ -1226,7 +1226,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div id="msg" class="msg" role="status"></div>
 </section>
 
-<section class="card">
+<section class="card" id="tpl-section">
 <h2 id="h-tpl">テンプレート</h2>
 <div class="row">
   <div class="field" style="flex: 0 1 14em">
@@ -1284,7 +1284,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <div class="col">
 
-<section class="card">
+<section class="card" id="merge-section">
 <h2 id="h-merge">差し込み印刷</h2>
 <fieldset>
   <legend>データソース</legend>
@@ -1469,6 +1469,17 @@ function setMsg(el, text, ok) {
   el.textContent = text || "";
   el.className = "msg " + (ok === true ? "ok" : ok === false ? "err" : "");
 }
+// 入力を直したらエラー表示は消す。直した後も残っていると、今の入力に
+// 対する結果と紛らわしいため。成功メッセージはそのまま残す。
+function clearErrOnEdit(sectionId, msgId) {
+  const section = $(sectionId);
+  const handler = () => {
+    const el = $(msgId);
+    if (el.classList.contains("err")) setMsg(el, "");
+  };
+  section.addEventListener("input", handler);
+  section.addEventListener("change", handler);
+}
 async function post(path, data) {
   const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data)});
   return r.json();
@@ -1516,6 +1527,10 @@ function syncFrameInput() {
 }
 $("frame").addEventListener("change", syncFrameInput);
 syncFrameInput();
+
+clearErrOnEdit("label-section", "msg");
+clearErrOnEdit("tpl-section", "msg");
+clearErrOnEdit("merge-section", "merge-msg");
 
 $("btn-tape-detect").onclick = detectTape;
 // テープ送り: 空白行だけのジョブを送る (カットなし / フルカット)。
@@ -1972,6 +1987,7 @@ $("btn-labels").onclick = async () => {
     const mode = document.querySelector('input[name="mode"]:checked').value;
     payload = {source: "series", template: $("text").value, series, mode};
   }
+  setMsg($("merge-msg"), "");
   const r = await post("/api/labels", payload);
   if (!r.ok) { setMsg($("merge-msg"), "ラベルを生成できませんでした: " + (r.error || ""), false); return; }
   currentLabels = r.labels;
@@ -1989,6 +2005,7 @@ $("btn-labels").onclick = async () => {
     item.type = "button";
     item.textContent = (i + 1) + ": " + label.replace(/\n/g, " / ");
     item.onclick = async () => {
+      setMsg($("merge-msg"), "");
       const p = await post("/api/merge/preview", {opts: opts(), labels: currentLabels, index: i});
       if (p.ok) renderPreview(p);
       else setMsg($("merge-msg"), "プレビューを作成できませんでした: " + p.error, false);
