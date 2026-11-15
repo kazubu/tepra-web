@@ -122,7 +122,7 @@ def build_driver_args(opts):
         args += ["--cut", cut]
     if opts.get("cable"):
         # ケーブル表示ラベル: テープ上端から測った印刷可能エリア内だけに
-        # 印字する (既定は 24mm = 8mm、36mm = 13mm)。
+        # 印字する (既定は 24mm = 7.5mm、36mm = 12.5mm)。
         args += ["--cable"]
         cable_mm = str(opts.get("cable_mm", "") or "").strip()
         if cable_mm:
@@ -966,10 +966,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <section class="card" id="preview-section">
 <h2 id="h-preview">プレビュー</h2>
-<p id="preview-empty" class="note">「プレビュー」を押すか、差し込み印刷のラベルを選ぶとここに表示されます。</p>
+<p id="preview-empty" class="note">「プレビュー」を押すか、差し込み印刷のラベルを選んでください。</p>
 <div id="preview-size" class="note" role="status"></div>
 <div id="preview"></div>
-<p class="note" id="ruler-note" style="display:none">枠はテープの実寸、斜線はラベルのうち印字されない部分（テープの縁と余白）、目盛りは mm の目安です。</p>
+<p class="note" id="ruler-note" style="display:none">枠はテープの実寸、斜線は印字されない部分、目盛りは mm の目安です。</p>
 </section>
 
 <section class="card">
@@ -1044,10 +1044,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <input id="copies" type="number" min="1" max="99" step="1" inputmode="numeric" value="1" aria-describedby="copies-note">
   </div>
 </div>
-<p class="note" id="copies-note">同じラベルを 1 ジョブで複数枚印刷し、カット設定で切り分けます。差し込み印刷では各ラベルに適用されます。</p>
+<p class="note" id="copies-note">同じラベルを連続で印刷します。差し込み印刷では各ラベルに適用されます。</p>
 <div class="row">
   <label><input type="checkbox" id="frame"> 枠線を付ける</label>
-  <span class="note">印刷内容の周囲に枠を描きます。</span>
 </div>
 <div class="row">
   <label><input type="checkbox" id="cable"> ケーブル表示ラベル</label>
@@ -1055,7 +1054,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <label for="cable_mm">印刷エリア(mm)</label>
     <input id="cable_mm" type="number" min="1" max="50" step="0.5" inputmode="decimal" placeholder="既定" disabled>
   </div>
-  <span class="note">テープ上端から測った印刷エリア内だけに印字します（既定は 24mm が 8mm、36mm が 13mm）。残りはケーブルに巻く透明部分です。はみ出す場合は値を小さくしてください。</span>
+  <span class="note">テープ上端の印刷エリアだけに印字します。既定は 24mm が 7.5mm、36mm が 12.5mm。はみ出すときは小さくしてください。</span>
 </div>
 <div class="row">
   <button id="btn-tape-detect" type="button" aria-describedby="tape-note">装着テープを確認</button>
@@ -1105,19 +1104,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <label for="tpl-list">保存済みテンプレート</label>
     <select id="tpl-list"></select>
   </div>
-  <button id="btn-tpl-load" type="button">選択したテンプレートを読み込む</button>
-  <button id="btn-tpl-delete" type="button">選択したテンプレートを削除</button>
+  <button id="btn-tpl-load" type="button">読み込む</button>
+  <button id="btn-tpl-delete" type="button">削除</button>
 </div>
-<p class="note">設定一式とテキストを保存します。</p>
+<p class="note">テキストも一緒に保存します。</p>
 <div class="row">
   <a class="button" id="btn-tpl-export" href="/api/templates/export" download="tepra-templates.json">ファイルに書き出す</a>
   <label class="button" for="tpl-import-file" style="cursor:pointer">ファイルから読み込む</label>
   <input type="file" id="tpl-import-file" accept=".json,application/json" hidden>
-  <span class="note">全テンプレートを JSON で書き出し/読み込みします。同名は読み込み時に上書きか別名追加を選べます。</span>
+  <span class="note">全テンプレートを JSON で書き出し/読み込みします。</span>
 </div>
 <dialog id="dlg-import" aria-labelledby="dlg-import-title">
   <h2 id="dlg-import-title">同名のテンプレートがあります</h2>
-  <p>次のテンプレートは既に存在します: <span id="dlg-import-names"></span></p>
+  <p>重複するテンプレート: <span id="dlg-import-names"></span></p>
   <form method="dialog">
     <div class="row" style="justify-content: flex-end">
       <button value="cancel" autofocus>キャンセル</button>
@@ -1128,7 +1127,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </dialog>
 <dialog id="dlg-print-placeholder" aria-labelledby="dlg-print-placeholder-title">
   <h2 id="dlg-print-placeholder-title">プレースホルダが含まれています</h2>
-  <p><span id="dlg-print-placeholder-names"></span> は置き換えられず、この文字のまま印刷されます。データを差し込むには「差し込み印刷」の「全ラベルを印刷」を使ってください。</p>
+  <p><span id="dlg-print-placeholder-names"></span> はそのままの文字で印刷されます。データを差し込むには「差し込み印刷」を使ってください。</p>
   <form method="dialog">
     <div class="row" style="justify-content: flex-end">
       <button value="cancel" autofocus>キャンセル</button>
