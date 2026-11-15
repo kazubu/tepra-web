@@ -111,6 +111,10 @@ def build_driver_args(opts):
         frame_width = opts.get("frame_width", "")
         if frame_width not in ("", None):
             args += ["--frame-width", str(frame_width)]
+        frame_mm = str(opts.get("frame_mm", "") or "").strip()
+        if frame_mm:
+            # 枠線の横幅 (送り方向)。空ならドライバが文字を囲む。
+            args += ["--frame-mm", frame_mm]
     length_mm = opts.get("length_mm", "")
     if length_mm not in ("", None):
         args += ["--max-tape-length-mm", str(length_mm)]
@@ -1213,6 +1217,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <label for="frame_width">太さ(ドット)</label>
     <input id="frame_width" type="number" min="1" max="3" step="1" inputmode="numeric" value="2" style="width: 5em" disabled>
   </div>
+  <div class="field inline">
+    <label for="frame_mm">横幅(mm)</label>
+    <input id="frame_mm" type="number" min="1" max="500" step="0.5" inputmode="decimal" placeholder="自動" style="width: 6em" disabled>
+  </div>
+  <span class="note">横幅は空欄なら文字を囲みます。指定するとラベルの中央にその幅で描きます。</span>
 </div>
 <div class="row">
   <label><input type="checkbox" id="cable"> ケーブル表示ラベル</label>
@@ -1412,6 +1421,7 @@ function opts() {
     ratios: currentRatios(),
     frame: $("frame").checked,
     frame_width: $("frame_width").value,
+    frame_mm: $("frame_mm").value,
     cut: $("cut").value,
     copies: $("copies").value,
     cable: $("cable").checked,
@@ -1541,7 +1551,9 @@ function syncCableInput() {
 $("cable").addEventListener("change", syncCableInput);
 syncCableInput();
 function syncFrameInput() {
-  $("frame_width").disabled = !$("frame").checked;
+  const on = $("frame").checked;
+  $("frame_width").disabled = !on;
+  $("frame_mm").disabled = !on;
 }
 $("frame").addEventListener("change", syncFrameInput);
 syncFrameInput();
@@ -1853,6 +1865,7 @@ function applyFormState(t) {
   applyMargins(t.margin_preset, t.left_margin_mm, t.right_margin_mm);
   $("frame").checked = !!t.frame;
   $("frame_width").value = t.frame_width || "2";
+  $("frame_mm").value = t.frame_mm || "";
   $("cut").value = t.cut || "full";
   $("copies").value = t.copies || "1";
   $("cable").checked = !!t.cable;
