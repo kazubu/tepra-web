@@ -1076,7 +1076,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   table.matrix td, table.matrix th { border: 1px solid var(--border); padding: .2em .5em; }
   .labels-list { max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: .3em; display: flex; flex-direction: column; gap: 2px; }
   /* flex: none がないと、件数が多いときに項目が縮んでスクロールせず潰れる */
-  .labels-list button { flex: none; text-align: left; border-color: transparent; min-height: 0; padding: .15em .4em; white-space: pre-wrap; word-break: break-all; }
+  .labels-list > * { flex: none; }
+  .labels-list button { text-align: left; border-color: transparent; min-height: 0; padding: .15em .4em; white-space: pre-wrap; word-break: break-all; }
+  .labels-item { display: flex; align-items: center; gap: .4em; }
+  .labels-item > button { flex: 1 1 auto; }
   .note { color: var(--muted); font-size: .9em; }
   .button { display: inline-flex; align-items: center; padding: .45em 1em; min-height: 2.4em; box-sizing: border-box; background: var(--surface); color: inherit; border: 1px solid var(--border); border-radius: 8px; text-decoration: none; cursor: pointer; }
   .button:hover { background: var(--hover); }
@@ -1361,10 +1364,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <span id="labels-count" role="status"></span>
 </div>
 <div id="matrix"></div>
+<div class="row" id="labels-tools" hidden>
+  <button id="btn-sel-all" type="button">すべて選択</button>
+  <button id="btn-sel-none" type="button">すべて解除</button>
+  <div class="field inline">
+    <label for="sel-range">範囲</label>
+    <input id="sel-range" placeholder="例: 1-5,8" style="width: 9em">
+  </div>
+  <button id="btn-sel-range" type="button">範囲で選択</button>
+</div>
 <div id="labels-list" class="labels-list" style="display:none"></div>
 <div class="section-actions">
   <div class="group">
-    <button id="btn-merge-print" type="button" class="primary">全ラベルを印刷</button>
+    <button id="btn-merge-print" type="button" class="primary">選択したラベルを印刷</button>
   </div>
   <div class="group">
     <button id="btn-reset-merge" type="button" class="reset">差し込み印刷を初期設定に戻す</button>
@@ -1376,7 +1388,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span id="merge-progress-text" role="status"></span>
     <button id="btn-merge-cancel" type="button">キャンセル</button>
   </div>
-  <p class="note">全ラベルを 1 ジョブで送ります。送信後はキャンセルできません。</p>
+  <p class="note">選択したラベルを 1 ジョブで送ります。送信後はキャンセルできません。</p>
 </div>
 <div id="merge-msg" class="msg" role="status"></div>
 </section>
@@ -1669,6 +1681,9 @@ $("btn-reset-merge").onclick = () => {
   $("labels-count").textContent = "";
   $("labels-list").innerHTML = "";
   $("labels-list").style.display = "none";
+  $("labels-tools").hidden = true;
+  labelsInfo = "";
+  updateSelection();
   $("matrix").innerHTML = "";
   setMsg($("merge-msg"), "差し込み印刷を初期設定に戻しました", true);
   scheduleSave();
@@ -2027,22 +2042,36 @@ $("btn-labels").onclick = async () => {
     info += " (系列長: " + Object.entries(r.meta.lengths).map(([k, v]) => k + "=" + v).join(", ") + ")";
     if (r.meta.truncated) info += " ※対応付けのため短い方に合わせて切り詰めました";
   }
+  labelsInfo = info;
   $("labels-count").textContent = info;
   const list = $("labels-list");
   list.innerHTML = "";
   list.style.display = "";
   r.labels.forEach((label, i) => {
+    const text = (i + 1) + ": " + label.replace(/\n/g, " / ");
+    const row = document.createElement("div");
+    row.className = "labels-item";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.dataset.idx = String(i);
+    cb.setAttribute("aria-label", text + " を印刷する");
+    cb.addEventListener("change", updateSelection);
     const item = document.createElement("button");
     item.type = "button";
-    item.textContent = (i + 1) + ": " + label.replace(/\n/g, " / ");
+    item.textContent = text;
     item.onclick = async () => {
       setMsg($("merge-msg"), "");
       const p = await post("/api/merge/preview", {opts: opts(), labels: currentLabels, index: i});
       if (p.ok) renderPreview(p);
       else setMsg($("merge-msg"), "プレビューを作成できませんでした: " + p.error, false);
     };
-    list.appendChild(item);
+    row.appendChild(cb);
+    row.appendChild(item);
+    list.appendChild(row);
   });
+  $("labels-tools").hidden = false;
+  updateSelection();
   const mx = $("matrix");
   mx.innerHTML = "";
   if (r.matrix) {
@@ -2069,17 +2098,64 @@ $("btn-labels").onclick = async () => {
   }
 };
 
+// 生成したラベルのうち、チェックの入っているものだけを印刷する。
+let labelsInfo = "";
+function labelCheckboxes() {
+  return [...$("labels-list").querySelectorAll("input[type=checkbox]")];
+}
+function selectedLabels() {
+  return labelCheckboxes().filter(c => c.checked).map(c => currentLabels[+c.dataset.idx]);
+}
+function updateSelection() {
+  const boxes = labelCheckboxes();
+  const n = boxes.filter(c => c.checked).length;
+  $("labels-count").textContent = labelsInfo + (boxes.length ? "（選択 " + n + " 件）" : "");
+  $("btn-merge-print").disabled = boxes.length > 0 && n === 0;
+}
+function setAllSelected(on) {
+  for (const c of labelCheckboxes()) c.checked = on;
+  updateSelection();
+}
+$("btn-sel-all").onclick = () => setAllSelected(true);
+$("btn-sel-none").onclick = () => setAllSelected(false);
+// "1-5,8" のような指定で選び直す (1 始まり、範囲は両端を含む)。
+function applyRangeSelection() {
+  const spec = $("sel-range").value.trim();
+  const boxes = labelCheckboxes();
+  if (!spec) { setMsg($("merge-msg"), "選ぶ範囲を入力してください（例: 1-5,8）", false); return; }
+  const wanted = new Set();
+  for (const part of spec.split(",")) {
+    const m = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+    if (!m) { setMsg($("merge-msg"), "範囲の書き方が違います: " + part.trim() + "（例: 1-5,8）", false); return; }
+    const from = +m[1], to = m[2] ? +m[2] : +m[1];
+    if (from < 1 || to < from || to > boxes.length) {
+      setMsg($("merge-msg"), part.trim() + " は 1〜" + boxes.length + " の範囲外です", false);
+      return;
+    }
+    for (let i = from; i <= to; i++) wanted.add(i - 1);
+  }
+  for (const c of boxes) c.checked = wanted.has(+c.dataset.idx);
+  updateSelection();
+  setMsg($("merge-msg"), "");
+}
+$("btn-sel-range").onclick = applyRangeSelection;
+$("sel-range").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); applyRangeSelection(); }
+});
+
 // 連続印刷はバックグラウンドジョブ。進捗をポーリングして表示し、
 // キャンセルボタンで「印刷中のラベルが終わった時点」で停止できる。
 let mergeJobId = null;
 let mergePollTimer = null;
 $("btn-merge-print").onclick = async () => {
   if (!currentLabels.length) { setMsg($("merge-msg"), "印刷するには先に「ラベルを生成」を押してください", false); return; }
+  const labels = selectedLabels();
+  if (!labels.length) { setMsg($("merge-msg"), "印刷するラベルを選んでください", false); return; }
   const btn = $("btn-merge-print");
   btn.disabled = true;
   setMsg($("merge-msg"), "");
   try {
-    const r = await post("/api/merge/print", {opts: opts(), labels: currentLabels});
+    const r = await post("/api/merge/print", {opts: opts(), labels});
     if (!r.ok) { setMsg($("merge-msg"), "印刷を開始できませんでした: " + (r.error || ""), false); btn.disabled = false; return; }
     mergeJobId = r.job_id;
     $("merge-progress").style.display = "";
