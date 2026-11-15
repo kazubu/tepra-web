@@ -1,0 +1,18 @@
+[Unit]
+Description=TEPRA Web printing server
+After=network.target
+
+[Service]
+# インストール先に合わせて User / WorkingDirectory / ExecStart を変更してください。
+User=tepra
+WorkingDirectory=/opt/tepra-web
+ExecStart=/usr/bin/python3 /opt/tepra-web/server.py
+# ドライバの場所と SR3900P の USB Product ID (lsusb で確認した16進数) を指定。
+# TEPRA_PID を設定しない場合はドライバ既定 (SR3700P の 0103) で探します。
+Environment=TEPRA_DRIVER=/opt/tepra-web/tpsr3700
+Environment=TEPRA_PID=0103
+Environment=TEPRA_PORT=8090
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

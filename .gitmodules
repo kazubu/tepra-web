@@ -1,0 +1,3 @@
+[submodule "tpsr3700"]
+	path = driver
+	url = git@github.com:kazubu/tpsr3700.git

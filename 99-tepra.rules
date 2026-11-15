@@ -1,0 +1,13 @@
+# TEPRA (KING JIM) ラベルプリンタを一般ユーザから使えるようにする udev ルール
+#
+# !!! 重要 !!!
+# idProduct の値は SR3900P 実機を接続して `lsusb` で確認した値に
+# 必ず書き換えてください。下記 0103 は SR3700P の値です。
+# 確認方法: プリンタを USB 接続して `lsusb` を実行し、KING JIM / テプラ
+# らしい行の "ID 0d8a:xxxx" の xxxx 部分を使います。
+#
+# 設置先: /etc/udev/rules.d/99-tepra.rules
+# 反映: sudo udevadm control --reload-rules && sudo udevadm trigger
+#       (またはプリンタを抜き差し / 再起動)
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="0d8a", ATTR{idProduct}=="0103", MODE="0666"
