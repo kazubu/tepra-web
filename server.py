@@ -1004,6 +1004,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
   h1 { font-size: clamp(1.3rem, 1.15rem + 1vw, 1.8rem); }
   h2 { font-size: 1.1em; margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: .2em; }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1em 1.25em 1.25em; margin-block: 1em; }
+  /* 画面が広いときは 2 列に分ける。プレビューは横長なので全幅のまま上に置く。
+     狭いときは .col が素のブロックとして縦に並ぶ (順序は変わらない)。 */
+  .col { min-width: 0; }
+  @media (min-width: 1100px) {
+    body { max-width: 1400px; }
+    .columns { display: flex; align-items: flex-start; gap: 1em; }
+    .col { flex: 1 1 0; }
+  }
   textarea, input, select, button { font: inherit; font-size: max(1rem, 1em); }
   .visually-hidden:where(:not(:focus-within, :active)) {
     position: absolute !important; clip-path: inset(50%) !important; overflow: hidden !important;
@@ -1062,6 +1070,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #ruler .tick { position: absolute; bottom: 0; width: 1px; height: 5px; background: var(--muted); }
   #ruler .tick.major { height: 8px; }
   #ruler .tick-label { position: absolute; bottom: 8px; transform: translateX(-50%); white-space: nowrap; }
+  /* 件数が増えてもカードが伸び続けないよう、枠内でスクロールさせる。 */
+  #history-list { max-height: min(24em, 60vh); overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 0 .5em; }
+  #history-list:empty { display: none; }
   .history-item { display: flex; gap: .6em; align-items: baseline; flex-wrap: wrap; padding: .45em .2em; border-bottom: 1px solid var(--border); }
   .history-item:last-child { border-bottom: none; }
   .history-item .h-time { color: var(--muted); font-size: .85em; white-space: nowrap; }
@@ -1079,6 +1090,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <h1>TEPRA Web 印刷</h1>
 <div id="config" class="note"></div>
 
+<section class="card" id="printer-section">
+<h2 id="h-printer">プリンタ</h2>
+<div class="row">
+  <button id="btn-tape-detect" type="button" aria-describedby="tape-note">装着テープを確認</button>
+  <span id="tape-status" role="status">装着テープ: 未確認</span>
+</div>
+<div class="row">
+  <div class="field" style="flex: 0 1 8em">
+    <label for="feed_mm">送り長(mm)</label>
+    <input id="feed_mm" type="number" min="1" max="500" step="1" inputmode="numeric" value="10">
+  </div>
+  <button id="btn-feed" type="button">テープを送る</button>
+  <button id="btn-feed-cut" type="button">送ってカット</button>
+  <span id="feed-status" role="status"></span>
+</div>
+<p class="note" id="tape-note">テープ幅「自動」ではプレビュー/印刷のたびに本体から幅を取得します。</p>
+</section>
+
 <section class="card" id="preview-section">
 <h2 id="h-preview">プレビュー</h2>
 <p id="preview-empty" class="note">「プレビュー」を押すか、差し込み印刷のラベルを選んでください。</p>
@@ -1086,6 +1115,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div id="preview"></div>
 <p class="note" id="ruler-note" style="display:none">枠はテープの実寸、斜線は印字されない部分、目盛りは mm の目安です。</p>
 </section>
+
+<div class="columns">
+<div class="col">
 
 <section class="card">
 <h2 id="h-label">ラベル</h2>
@@ -1144,10 +1176,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <input id="right_margin_mm" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="3" disabled>
   </div>
   <div class="field">
-    <label for="frame_width">枠線の太さ(ドット)</label>
-    <input id="frame_width" type="number" min="1" max="3" step="1" inputmode="numeric" value="2">
-  </div>
-  <div class="field">
     <label for="cut">カット</label>
     <select id="cut">
       <option value="full">フルカット</option>
@@ -1163,6 +1191,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <p class="note" id="copies-note">同じラベルを連続で印刷します。差し込み印刷では各ラベルに適用されます。</p>
 <div class="row">
   <label><input type="checkbox" id="frame"> 枠線を付ける</label>
+  <div class="field" style="flex: 0 1 11em">
+    <label for="frame_width">太さ(ドット)</label>
+    <input id="frame_width" type="number" min="1" max="3" step="1" inputmode="numeric" value="2" disabled>
+  </div>
 </div>
 <div class="row">
   <label><input type="checkbox" id="cable"> ケーブル表示ラベル</label>
@@ -1172,20 +1204,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
   <span class="note">テープ上端の印刷エリアだけに印字します。既定は 24mm が 7.5mm、36mm が 12.5mm。はみ出すときは小さくしてください。</span>
 </div>
-<div class="row">
-  <button id="btn-tape-detect" type="button" aria-describedby="tape-note">装着テープを確認</button>
-  <span id="tape-status" role="status">装着テープ: 未確認</span>
-</div>
-<div class="row">
-  <div class="field" style="flex: 0 1 8em">
-    <label for="feed_mm">送り長(mm)</label>
-    <input id="feed_mm" type="number" min="1" max="500" step="1" inputmode="numeric" value="10">
-  </div>
-  <button id="btn-feed" type="button">テープを送る</button>
-  <button id="btn-feed-cut" type="button">送ってカット</button>
-  <span id="feed-status" role="status"></span>
-</div>
-<p class="note" id="tape-note">テープ幅「自動」ではプレビュー/印刷のたびに本体から幅を取得します。</p>
 <div class="field">
   <label for="text">印刷テキスト</label>
   <textarea id="text" rows="3" aria-describedby="text-hint" placeholder="例: HOST-A&#10;10.0.0.1"></textarea>
@@ -1262,6 +1280,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </form>
 </dialog>
 </section>
+
+</div>
+<div class="col">
 
 <section class="card">
 <h2 id="h-merge">差し込み印刷</h2>
@@ -1352,6 +1373,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </form>
 </dialog>
 </section>
+
+</div>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -1481,12 +1505,17 @@ async function detectTape() {
     el.className = "err";
   }
 }
-// 印刷エリアの入力は「ケーブル表示ラベル」のときだけ有効にする。
+// 印刷エリア / 枠線の太さは、対応するチェックが入っているときだけ有効にする。
 function syncCableInput() {
   $("cable_mm").disabled = !$("cable").checked;
 }
 $("cable").addEventListener("change", syncCableInput);
 syncCableInput();
+function syncFrameInput() {
+  $("frame_width").disabled = !$("frame").checked;
+}
+$("frame").addEventListener("change", syncFrameInput);
+syncFrameInput();
 
 $("btn-tape-detect").onclick = detectTape;
 // テープ送り: 空白行だけのジョブを送る (カットなし / フルカット)。
@@ -1796,6 +1825,7 @@ function applyFormState(t) {
   $("cable").checked = !!t.cable;
   $("cable_mm").value = t.cable_mm || "";
   syncCableInput();
+  syncFrameInput();
   $("text").value = t.text || "";
   syncRatioInputs();
   if (t.ratios) {
