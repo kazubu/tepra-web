@@ -903,7 +903,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     width: 1px !important; height: 1px !important; margin: -1px !important; padding: 0 !important;
     border: 0 !important; white-space: nowrap !important;
   }
-  textarea, input, select { background: var(--surface); color: inherit; border: 1px solid var(--border); border-radius: 6px; padding: .35em .5em; }
+  textarea, input, select { background: var(--surface); color: inherit; border: 1px solid var(--border); border-radius: 6px; padding: .35em .5em; box-sizing: border-box; }
   textarea { width: 100%; box-sizing: border-box; }
   fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 .5em; padding: .25em .75em .5em; min-width: 0; }
   legend { padding: 0 .3em; font-size: .95em; }
@@ -911,7 +911,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .field { display: flex; flex-direction: column; gap: .25rem; flex: 1 1 9em; margin-block: .25em; }
   .field[hidden] { display: none; }
   .field > label { font-size: .9em; }
-  button { padding: .45em 1em; cursor: pointer; background: var(--surface); color: inherit; border: 1px solid var(--border); border-radius: 8px; min-height: 2.4em; }
+  /* ボタンと高さを揃える (欄名が上にあるぶん、行の中で下端を合わせる) */
+  .field > :where(input:not([type="checkbox"]):not([type="radio"]), select) { min-height: 2.4em; }
+  .row:has(> .field) { align-items: flex-end; }
+  .row:has(> .field) > :not(.field) { margin-block: .25em; }
+  button { padding: .45em 1em; cursor: pointer; background: var(--surface); color: inherit; border: 1px solid var(--border); border-radius: 8px; min-height: 2.4em; box-sizing: border-box; }
   button:hover:not(:disabled) { background: var(--hover); }
   button:disabled { opacity: .55; cursor: default; }
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
@@ -940,8 +944,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .labels-list { max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: .3em; display: flex; flex-direction: column; gap: 2px; }
   .labels-list button { text-align: left; border-color: transparent; min-height: 0; padding: .15em .4em; white-space: pre-wrap; word-break: break-all; }
   .note { color: var(--muted); font-size: .9em; }
-  a.button { display: inline-flex; align-items: center; padding: .45em 1em; min-height: 2.4em; box-sizing: border-box; background: var(--surface); color: inherit; border: 1px solid var(--border); border-radius: 8px; text-decoration: none; cursor: pointer; }
-  a.button:hover { background: var(--hover); }
+  .button { display: inline-flex; align-items: center; padding: .45em 1em; min-height: 2.4em; box-sizing: border-box; background: var(--surface); color: inherit; border: 1px solid var(--border); border-radius: 8px; text-decoration: none; cursor: pointer; }
+  .button:hover { background: var(--hover); }
+  /* ファイル選択: 見た目はボタン。キーボードでも押せるよう input は hidden にしない */
+  .file-input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .file-input:focus-visible + .button { outline: 3px solid var(--accent); outline-offset: 2px; }
   progress { width: min(24em, 100%); height: 1.1em; accent-color: var(--accent); }
   #ruler { position: relative; height: 1.3em; margin-bottom: .15em; color: var(--muted); font-size: 10px; }
   #ruler .tick { position: absolute; bottom: 0; width: 1px; height: 5px; background: var(--muted); }
@@ -1111,8 +1118,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <p class="note">テキストも一緒に保存します。</p>
 <div class="row">
   <a class="button" id="btn-tpl-export" href="/api/templates/export" download="tepra-templates.json">ファイルに書き出す</a>
-  <label class="button" for="tpl-import-file" style="cursor:pointer">ファイルから読み込む</label>
-  <input type="file" id="tpl-import-file" accept=".json,application/json" hidden>
+  <input type="file" id="tpl-import-file" accept=".json,application/json" class="file-input">
+  <label class="button" for="tpl-import-file">ファイルから読み込む</label>
   <span class="note">全テンプレートを JSON で書き出し/読み込みします。</span>
 </div>
 <dialog id="dlg-import" aria-labelledby="dlg-import-title">
