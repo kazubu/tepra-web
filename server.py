@@ -13,6 +13,9 @@ Python 標準ライブラリのみで動作する単一ファイルの Web ア�
                      (既定: このファイルと同じディレクトリの ./tpsr3700)
   TEPRA_VID          USB Vendor ID (16進, 例 0d8a)。ドライバへ --vid で渡す
   TEPRA_PID          USB Product ID (16進)。SR3900P では lsusb で確認した値を指定
+  TEPRA_MODEL        プリンタ機種 sr3900p (既定) または sr3700p。ドライバへ
+                     --model で渡す。解像度 (360/270 dpi) と各テープ幅の
+                     ドット数、ジョブ内の機種依存バイトが切り替わる
   TEPRA_PORT         待ち受けポート (既定 8090)
   TEPRA_HOST         待ち受けアドレス (既定 0.0.0.0)
   TEPRA_DRY_RUN      "1" のとき印刷の代わりに --no-print --dump で
@@ -48,6 +51,10 @@ BASE_DIR = Path(__file__).resolve().parent
 DRIVER = os.environ.get("TEPRA_DRIVER", str(BASE_DIR / "tpsr3700"))
 VID = os.environ.get("TEPRA_VID", "")
 PID = os.environ.get("TEPRA_PID", "")
+MODEL = (os.environ.get("TEPRA_MODEL", "") or "sr3900p").strip().lower()
+MODEL_DPI = {"sr3700p": 270.0, "sr3900p": 360.0}
+if MODEL not in MODEL_DPI:
+    raise SystemExit(f"TEPRA_MODEL は sr3700p か sr3900p を指定してください: {MODEL}")
 PORT = int(os.environ.get("TEPRA_PORT", "8090"))
 HOST = os.environ.get("TEPRA_HOST", "0.0.0.0")
 DRY_RUN = os.environ.get("TEPRA_DRY_RUN", "") == "1"
@@ -72,7 +79,7 @@ PLACEHOLDER_RE = re.compile(r"\{\{\s*([^\s{}]+)\s*\}\}")
 
 def build_driver_args(opts):
     """印刷/プレビュー共通の CLI 引数を組み立てる (テキストは除く)。"""
-    args = [DRIVER]
+    args = [DRIVER, "--model", MODEL]
     tape = str(opts.get("tape", "auto"))
     notes = []
     if tape != "auto":
@@ -90,8 +97,8 @@ def build_driver_args(opts):
     if isinstance(ratios, (list, tuple)):
         ratios = ",".join(str(r) for r in ratios if str(r).strip() not in ("", "None"))
     if ratios not in ("", None):
-        # 行ごとのサイズ比率。個数不一致や折り返し (ラベル長) との併用は
-        # ドライバ側がエラーにするので、そのまま渡す。
+        # 行ごとのサイズ比率。個数不一致はドライバ側がエラーにする。ラベル長
+        # との併用は固定長 (折り返しなし、収まらなければエラー) になる。
         args += ["--line-ratios", str(ratios)]
     align = opts.get("align", "left")
     if align in ("left", "center", "right"):
@@ -104,6 +111,19 @@ def build_driver_args(opts):
     length_mm = opts.get("length_mm", "")
     if length_mm not in ("", None):
         args += ["--max-tape-length-mm", str(length_mm)]
+    for key, flag in (("left_margin_mm", "--left-margin-mm"), ("right_margin_mm", "--right-margin-mm")):
+        value = str(opts.get(key, "") or "").strip()
+        if value:
+            # 送り方向の余白 (mm)。Web はプリセット (なし 1/0, 小 4/3, 中 6/5,
+            # 大 8/7) かカスタム値を常に送る。空ならドライバ既定 (左 4 / 右 3)。
+            args += [flag, value]
+    cut = str(opts.get("cut", "full") or "full")
+    if cut in ("full", "half", "none"):
+        args += ["--cut", cut]
+    copies = str(opts.get("copies", "") or "").strip()
+    if copies and copies != "1":
+        # 1 ジョブ内で同じラベルを複数枚印刷する (カット設定に従って切り分け)。
+        args += ["--copies", copies]
     if VID:
         args += ["--vid", VID]
     if PID:
@@ -122,9 +142,9 @@ def run_driver(args, timeout=CLI_TIMEOUT):
     return proc.returncode, proc.stdout, proc.stderr
 
 
-# ドライバの想定解像度 (font/mod.rs の DOTS_PER_INCH と同じ値)。
+# プリンタの物理解像度 (driver の Model::dpi と同じ値: SR3700P 270 / SR3900P 360)。
 # ラベル長はジョブの行数 (送り方向ドット数) からこの値で換算する。
-DOTS_PER_INCH = 208.0
+DOTS_PER_INCH = MODEL_DPI[MODEL]
 
 
 def resolve_tape_mm(opts):
@@ -152,7 +172,7 @@ def do_preview(opts, text):
     """CLI の --preview-out で SVG を生成して返す (印刷経路と同一描画)。
 
     応答には実寸情報も含める: SVG の width 属性 = 送り方向の行数
-    (ドット数) なので、208 dpi で mm に換算してラベル長とする。
+    (ドット数) なので、360 dpi で mm に換算してラベル長とする。
     """
     args, notes = build_driver_args(opts)
     with tempfile.TemporaryDirectory() as td:
@@ -163,6 +183,8 @@ def do_preview(opts, text):
         if rc != 0:
             return {"ok": False, "error": err.strip() or f"driver exited {rc}"}
         svg = svg_path.read_text(encoding="utf-8")
+    # ドライバの警告 (未キャプチャ幅のフォールバック等) は画面にも出す。
+    notes += [line.strip() for line in err.splitlines() if line.startswith("warning:")]
     feed_rows = None
     m = re.search(r'<svg[^>]*\bwidth="(\d+)"', svg)
     if m:
@@ -177,16 +199,33 @@ def do_preview(opts, text):
         "tape_mm": resolve_tape_mm(opts),
         "length_mm": length_mm,
         "feed_rows": feed_rows,
+        "dpi": DOTS_PER_INCH,
     }
 
 
 def do_print(opts, text):
     """CLI を --skip-preview で実行して 1 枚印刷する (DRY_RUN 時はダンプ)。"""
+    return do_print_labels(opts, [text])
+
+
+def do_print_labels(opts, labels):
+    """複数ラベルを 1 ジョブとして印刷する (DRY_RUN 時はダンプ)。
+
+    ドライバの --labels-file (ASCII RS 区切り) に渡す。ジョブ内では
+    ラベルごとに L/T/ラスタのブロックが並び、カット設定 (ハーフカット等)
+    がラベル間にも適用される。
+    """
     args, notes = build_driver_args(opts)
     with tempfile.TemporaryDirectory() as td:
+        if len(labels) == 1:
+            target = [labels[0]]
+        else:
+            labels_path = Path(td) / "labels.txt"
+            labels_path.write_text("\x1e".join(labels), encoding="utf-8")
+            target = ["--labels-file", str(labels_path)]
         if DRY_RUN:
             dump_path = Path(td) / "job.prn"
-            full = args + ["--skip-preview", "--no-print", "--dump", str(dump_path), text]
+            full = args + ["--skip-preview", "--no-print", "--dump", str(dump_path)] + target
             with CLI_LOCK:
                 rc, _out, err = run_driver(full)
             if rc != 0:
@@ -194,12 +233,14 @@ def do_print(opts, text):
             size = dump_path.stat().st_size
             return {
                 "ok": True,
-                "message": f"DRY_RUN: ジョブを生成しました ({size} bytes)。実機には送信していません。",
+                "message": f"DRY_RUN: ジョブを生成しました ({len(labels)} 件, {size} bytes)。実機には送信していません。",
                 "notes": notes,
             }
-        full = args + ["--skip-preview", text]
+        # --wait: 印刷が終わるまでドライバが状態をポーリングして戻る。
+        # 次のジョブを印刷中に送らないため (CLI_LOCK と併用)。
+        full = args + ["--skip-preview", "--wait"] + target
         with CLI_LOCK:
-            rc, _out, err = run_driver(full)
+            rc, _out, err = run_driver(full, timeout=CLI_TIMEOUT + 180 + 30 * len(labels))
         if rc != 0:
             return {"ok": False, "error": err.strip() or f"driver exited {rc}"}
         return {"ok": True, "message": "印刷しました。", "notes": notes, "detail": err.strip()}
@@ -207,7 +248,7 @@ def do_print(opts, text):
 
 # ドライバのテープ幅インデックス表 (docs/protocol.md 1.5)
 TAPE_INDEX_BY_MM = {4: 0, 6: 1, 9: 2, 12: 3, 18: 4, 24: 5, 36: 6, 50: 7}
-SUPPORTED_TAPE_MM = (6, 12, 18, 24)
+SUPPORTED_TAPE_MM = (4, 6, 9, 12, 18, 24, 36)
 
 
 def do_detect_tape():
@@ -356,24 +397,26 @@ def merge_job_view(job):
 
 
 def _merge_worker(job, labels, opts):
+    # 全ラベルを 1 ジョブで送る (ラベル間のカット設定を活かすため)。
+    # 送信後はプリンタ側で一気に印刷されるので、途中キャンセルは
+    # 送信前にしか効かない。
     state = "done"
     error = None
-    for i, label in enumerate(labels):
-        if job["_cancel"].is_set():
-            state = "cancelled"
-            break
-        job["current_index"] = i
-        job["current_label"] = label
-        r = do_print(opts, label)
-        if not r.get("ok"):
+    if job["_cancel"].is_set():
+        state = "cancelled"
+    else:
+        job["phase"] = f"{len(labels)} 件を 1 ジョブとして送信・印刷中"
+        r = do_print_labels(opts, labels)
+        if r.get("ok"):
+            job["done"] = len(labels)
+        else:
             state = "error"
             error = r.get("error", "unknown error")
-            job["failed_index"] = i
-            job["failed_label"] = label
+            job["failed_index"] = 0
+            job["failed_label"] = labels[0]
             job["error"] = error
-            break
-        job["done"] = i + 1
     job["state"] = state
+    job["phase"] = None
     job["current_index"] = None
     job["current_label"] = None
     record_history({
@@ -400,6 +443,7 @@ def start_merge_job(labels, opts):
         "failed_index": None,
         "failed_label": None,
         "error": None,
+        "phase": None,
         "_cancel": threading.Event(),
     }
     with MERGE_JOBS_LOCK:
@@ -571,6 +615,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({
                 "dry_run": DRY_RUN,
                 "driver": DRIVER,
+                "model": MODEL,
+                "dpi": DOTS_PER_INCH,
                 "pid": PID or "(default 0103)",
                 "fake_tape": FAKE_TAPE or None,
             })
@@ -801,13 +847,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
   h1 { font-size: clamp(1.3rem, 1.15rem + 1vw, 1.8rem); }
   h2 { font-size: 1.1em; margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: .2em; }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1em 1.25em 1.25em; margin-block: 1em; }
-  textarea, input, select, button { font: inherit; }
+  textarea, input, select, button { font: inherit; font-size: max(1rem, 1em); }
+  .visually-hidden:where(:not(:focus-within, :active)) {
+    position: absolute !important; clip-path: inset(50%) !important; overflow: hidden !important;
+    width: 1px !important; height: 1px !important; margin: -1px !important; padding: 0 !important;
+    border: 0 !important; white-space: nowrap !important;
+  }
   textarea, input, select { background: var(--surface); color: inherit; border: 1px solid var(--border); border-radius: 6px; padding: .35em .5em; }
   textarea { width: 100%; box-sizing: border-box; }
   fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 .5em; padding: .25em .75em .5em; min-width: 0; }
   legend { padding: 0 .3em; font-size: .95em; }
   .row { margin: .5em 0; display: flex; gap: .5em; flex-wrap: wrap; align-items: center; }
   .field { display: flex; flex-direction: column; gap: .25rem; flex: 1 1 9em; margin-block: .25em; }
+  .field[hidden] { display: none; }
   .field > label { font-size: .9em; }
   button { padding: .45em 1em; cursor: pointer; background: var(--surface); color: inherit; border: 1px solid var(--border); border-radius: 8px; min-height: 2.4em; }
   button:hover:not(:disabled) { background: var(--hover); }
@@ -815,6 +867,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
   button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
   button.danger { background: var(--err); border-color: var(--err); color: var(--on-err); font-weight: 600; }
+  /* 初期設定に戻す: 他の操作と見分けがつくよう、控えめな色の輪郭ボタンにして各セクションの末尾右寄せに置く */
+  .section-actions { display: flex; justify-content: space-between; align-items: center; gap: .5em; flex-wrap: wrap; margin-top: 1em; padding-top: .6em; border-top: 1px dashed var(--border); }
+  .section-actions > .group { display: flex; align-items: center; gap: .5em; flex-wrap: wrap; }
+  button.reset { background: transparent; color: var(--muted); border-color: var(--muted); }
+  button.reset:hover:not(:disabled) { background: var(--hover); color: var(--text); }
   :where(button, input, select, textarea, a:any-link):focus-visible {
     outline: 3px solid var(--accent);
     outline-offset: 2px;
@@ -853,21 +910,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
+<main>
 <h1>TEPRA Web 印刷</h1>
 <div id="config" class="note"></div>
 
-<section class="card" aria-labelledby="h-label">
+<section class="card" id="preview-section">
+<h2 id="h-preview">プレビュー</h2>
+<p id="preview-empty" class="note">「プレビュー」を押すか、差し込み印刷のラベルを選ぶとここに表示されます。</p>
+<div id="preview-size" class="note" role="status"></div>
+<div id="preview"></div>
+<p class="note" id="ruler-note" style="display:none">枠はテープの実寸、斜線はラベルのうち印字されない部分（テープの縁と余白）、目盛りは mm の目安です。</p>
+</section>
+
+<section class="card">
 <h2 id="h-label">ラベル</h2>
 <div class="row">
   <div class="field">
     <label for="tape">テープ幅</label>
     <select id="tape">
       <option value="auto">自動</option>
+      <option value="4">4mm</option>
       <option value="6">6mm</option>
-      <option value="9" disabled>9mm（未対応）</option>
+      <option value="9">9mm</option>
       <option value="12">12mm</option>
       <option value="18">18mm</option>
-      <option value="24">24mm（実験的）</option>
+      <option value="24">24mm</option>
+      <option value="36">36mm</option>
     </select>
   </div>
   <div class="field">
@@ -880,70 +948,105 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="field">
     <label for="align">配置</label>
-    <select id="align">
+    <select id="align" aria-describedby="align-hint">
       <option value="left">左</option>
       <option value="center">中央</option>
       <option value="right">右</option>
     </select>
+    <span id="align-hint" class="visually-hidden">複数行、またはラベル長を指定したときに各行を揃えます</span>
   </div>
   <div class="field">
     <label for="length_mm">ラベル長(mm)</label>
-    <input id="length_mm" type="number" min="10" max="500" inputmode="decimal" placeholder="任意">
+    <input id="length_mm" type="number" min="10" max="500" inputmode="decimal" placeholder="指定なし">
+  </div>
+  <div class="field">
+    <label for="margin_preset">余白</label>
+    <select id="margin_preset">
+      <option value="none">なし（左1 / 右0）</option>
+      <option value="small" selected>小（左4 / 右3）</option>
+      <option value="medium">中（左6 / 右5）</option>
+      <option value="large">大（左8 / 右7）</option>
+      <option value="custom">カスタム</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="left_margin_mm">左余白(mm)</label>
+    <input id="left_margin_mm" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="4" disabled>
+  </div>
+  <div class="field">
+    <label for="right_margin_mm">右余白(mm)</label>
+    <input id="right_margin_mm" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="3" disabled>
   </div>
   <div class="field">
     <label for="frame_width">枠線の太さ(ドット)</label>
     <input id="frame_width" type="number" min="1" max="3" step="1" inputmode="numeric" value="2">
   </div>
+  <div class="field">
+    <label for="cut">カット</label>
+    <select id="cut">
+      <option value="full">フルカット</option>
+      <option value="half">ハーフカット</option>
+      <option value="none">カットしない</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="copies">枚数</label>
+    <input id="copies" type="number" min="1" max="99" step="1" inputmode="numeric" value="1" aria-describedby="copies-note">
+  </div>
 </div>
+<p class="note" id="copies-note">同じラベルを 1 ジョブで複数枚印刷し、カット設定で切り分けます。差し込み印刷では各ラベルに適用されます。</p>
 <div class="row">
   <label><input type="checkbox" id="frame"> 枠線を付ける</label>
-  <span class="note">印刷内容の周囲に枠を描きます（プレビューにも反映されます）。</span>
+  <span class="note">印刷内容の周囲に枠を描きます。</span>
 </div>
 <div class="row">
-  <button id="btn-tape-detect" type="button" aria-describedby="tape-note">本体から取得</button>
-  <span id="tape-status" role="status">装着テープ: 未取得</span>
+  <button id="btn-tape-detect" type="button" aria-describedby="tape-note">装着テープを確認</button>
+  <span id="tape-status" role="status">装着テープ: 未確認</span>
 </div>
-<p class="note" id="tape-note">テープ幅が「自動」のときは、プレビュー/印刷の実行時にドライバが本体から幅を取得します（このボタンは確認用です）。</p>
+<p class="note" id="tape-note">テープ幅「自動」ではプレビュー/印刷のたびに本体から幅を取得します。</p>
 <div class="field">
   <label for="text">印刷テキスト</label>
-  <textarea id="text" rows="3" placeholder="印刷するテキスト（改行可）。差し込み用プレースホルダは {{A}} のように書きます"></textarea>
+  <textarea id="text" rows="3" aria-describedby="text-hint" placeholder="例: HOST-A&#10;10.0.0.1"></textarea>
+  <span id="text-hint" class="note">改行で複数行になります。差し込みは {{A}} のように書きます。</span>
 </div>
 <div class="row" role="group" aria-labelledby="ratios-label">
   <span id="ratios-label">行ごとのサイズ比率:</span>
   <span id="ratios-inputs"></span>
 </div>
-<p class="note" id="ratios-note">行数に合わせて自動で増減します。例: 2行で「7 : 3」にすると1行目が大きく2行目が小さくなります。空欄は 1。ラベル長（折り返し）とは併用できません。</p>
-<div class="row">
-  <button id="btn-preview" type="button">プレビュー</button>
-  <button id="btn-print" type="button" class="primary">印刷</button>
+<p class="note" id="ratios-note">行ごとの文字サイズの比率（例: 2行で 7 : 3）。空欄は 1。ラベル長と併用すると折り返さず、収まらなければエラーになります。</p>
+<div class="section-actions">
+  <div class="group">
+    <button id="btn-preview" type="button">プレビュー</button>
+    <button id="btn-print" type="button" class="primary">印刷</button>
+  </div>
+  <div class="group">
+    <button id="btn-reset-label" type="button" class="reset">ラベルを初期設定に戻す</button>
+  </div>
 </div>
 <div id="msg" class="msg" role="status"></div>
-<div id="preview-size" class="note" role="status"></div>
-<div id="preview"></div>
-<p class="note" id="ruler-note" style="display:none">上の目盛りはプレビュー表示に合わせた mm の目安です（208 dpi 換算）。</p>
 </section>
 
-<section class="card" aria-labelledby="h-tpl">
+<section class="card">
 <h2 id="h-tpl">テンプレート</h2>
 <div class="row">
   <div class="field" style="flex: 0 1 14em">
     <label for="tpl-name">テンプレート名</label>
-    <input id="tpl-name" placeholder="テンプレート名">
+    <input id="tpl-name" placeholder="例: 機器ラベル">
   </div>
   <button id="btn-tpl-save" type="button">現在の設定を保存</button>
   <div class="field" style="flex: 0 1 12em">
     <label for="tpl-list">保存済みテンプレート</label>
     <select id="tpl-list"></select>
   </div>
-  <button id="btn-tpl-load" type="button">読み込み</button>
-  <button id="btn-tpl-delete" type="button">削除</button>
+  <button id="btn-tpl-load" type="button">選択したテンプレートを読み込む</button>
+  <button id="btn-tpl-delete" type="button">選択したテンプレートを削除</button>
 </div>
-<p class="note">テープ幅・フォント・サイズ・配置・ラベル長・枠線・行ごとのサイズ比率とテキストを一式で保存します。</p>
+<p class="note">設定一式とテキストを保存します。</p>
 <div class="row">
-  <a class="button" id="btn-tpl-export" href="/api/templates/export" download="tepra-templates.json">テンプレートを書き出し</a>
-  <label class="button" for="tpl-import-file" style="cursor:pointer">テンプレートを読み込み</label>
+  <a class="button" id="btn-tpl-export" href="/api/templates/export" download="tepra-templates.json">ファイルに書き出す</a>
+  <label class="button" for="tpl-import-file" style="cursor:pointer">ファイルから読み込む</label>
   <input type="file" id="tpl-import-file" accept=".json,application/json" hidden>
-  <span class="note">書き出しは全テンプレートの JSON です。読み込みで同名がある場合は確認ダイアログで「上書き」か「別名で追加」を選びます。</span>
+  <span class="note">全テンプレートを JSON で書き出し/読み込みします。同名は読み込み時に上書きか別名追加を選べます。</span>
 </div>
 <dialog id="dlg-import" aria-labelledby="dlg-import-title">
   <h2 id="dlg-import-title">同名のテンプレートがあります</h2>
@@ -956,9 +1059,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
   </form>
 </dialog>
+<dialog id="dlg-print-placeholder" aria-labelledby="dlg-print-placeholder-title">
+  <h2 id="dlg-print-placeholder-title">プレースホルダが含まれています</h2>
+  <p><span id="dlg-print-placeholder-names"></span> は置き換えられず、この文字のまま印刷されます。データを差し込むには「差し込み印刷」の「全ラベルを印刷」を使ってください。</p>
+  <form method="dialog">
+    <div class="row" style="justify-content: flex-end">
+      <button value="cancel" autofocus>キャンセル</button>
+      <button value="print" class="danger">そのまま印刷する</button>
+    </div>
+  </form>
+</dialog>
 <dialog id="dlg-delete" aria-labelledby="dlg-delete-title">
   <h2 id="dlg-delete-title">テンプレートを削除しますか？</h2>
-  <p>「<span id="dlg-delete-name"></span>」を削除します。この操作は取り消せません。</p>
+  <p>「<span id="dlg-delete-name"></span>」を削除します。元に戻せません。</p>
   <form method="dialog">
     <div class="row" style="justify-content: flex-end">
       <button value="cancel" autofocus>キャンセル</button>
@@ -968,7 +1081,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </dialog>
 </section>
 
-<section class="card" aria-labelledby="h-merge">
+<section class="card">
 <h2 id="h-merge">差し込み印刷</h2>
 <fieldset>
   <legend>データソース</legend>
@@ -998,7 +1111,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <label for="csv-text">CSVデータ</label>
     <textarea id="csv-text" rows="5" placeholder="A,B&#10;aa,1&#10;bb,2&#10;cc,3"></textarea>
   </div>
-  <p class="note">1行目がヘッダ（プレースホルダ名）、各行がラベル1枚になります。ファイルを選ぶと文字コードを判定して読み込みます（Excel の Shift_JIS CSV もそのまま使えます）。</p>
+  <p class="note">1行目がヘッダ（プレースホルダ名）、2行目以降が各ラベルです。文字コードは自動判定します。</p>
 </div>
 <div id="src-series" style="display:none">
   <fieldset>
@@ -1011,7 +1124,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
   </fieldset>
   <div id="series-inputs"></div>
-  <p class="note">各系列は1行に1要素で入力します。対応付けのときは短い系列の長さに合わせて切り詰めます。「系列を追加」で新しいプレースホルダの系列を増やせます（名前は変更可）。追加した系列のプレースホルダはテキスト欄で使ってください。マトリクス表は2系列の「組み合わせ」のときだけ表示されます。</p>
+  <p class="note">各系列は1行1要素。対応付けは短い系列の長さに合わせます。追加した系列の名前はテキスト欄で {{名前}} として使います。</p>
 </div>
 <div class="row">
   <button id="btn-labels" type="button">ラベルを生成</button>
@@ -1019,35 +1132,40 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <div id="matrix"></div>
 <div id="labels-list" class="labels-list" style="display:none"></div>
-<div class="row">
-  <button id="btn-merge-print" type="button" class="primary">連続印刷</button>
+<div class="section-actions">
+  <div class="group">
+    <button id="btn-merge-print" type="button" class="primary">全ラベルを印刷</button>
+  </div>
+  <div class="group">
+    <button id="btn-reset-merge" type="button" class="reset">差し込み印刷を初期設定に戻す</button>
+  </div>
 </div>
 <div id="merge-progress" style="display:none">
   <div class="row">
-    <progress id="merge-progress-bar" max="1" value="0" aria-label="連続印刷の進捗"></progress>
+    <progress id="merge-progress-bar" max="1" value="0" aria-label="差し込み印刷の進捗"></progress>
     <span id="merge-progress-text" role="status"></span>
     <button id="btn-merge-cancel" type="button">キャンセル</button>
   </div>
-  <p class="note">キャンセルすると、印刷中のラベルが完了した時点で停止します。</p>
+  <p class="note">全ラベルを 1 ジョブで送ります。送信後はキャンセルできません。</p>
 </div>
 <div id="merge-msg" class="msg" role="status"></div>
 </section>
 
-<section class="card" aria-labelledby="h-history">
+<section class="card">
 <h2 id="h-history">印刷履歴</h2>
 <div class="row">
   <button id="btn-history-refresh" type="button">履歴を更新</button>
-  <button id="btn-history-clear" type="button">履歴をクリア</button>
+  <button id="btn-history-clear" type="button">履歴を削除</button>
 </div>
 <div id="history-list"></div>
-<p class="note">単発印刷と差し込み連続印刷の履歴です（直近100件まで保存）。「再印刷」で同じ内容をもう一度印刷できます。失敗した印刷もここから再実行できます。</p>
+<p class="note">直近 100 件。「読み込む」で設定とテキストをフォームに戻します。「再印刷」はそのまま印刷します。</p>
 <dialog id="dlg-history-clear" aria-labelledby="dlg-history-clear-title">
-  <h2 id="dlg-history-clear-title">履歴をクリアしますか？</h2>
-  <p>保存されている印刷履歴をすべて削除します。この操作は取り消せません。</p>
+  <h2 id="dlg-history-clear-title">印刷履歴をすべて削除しますか？</h2>
+  <p>削除した履歴は元に戻せません。</p>
   <form method="dialog">
     <div class="row" style="justify-content: flex-end">
       <button value="cancel" autofocus>キャンセル</button>
-      <button value="clear" class="danger">クリアする</button>
+      <button value="clear" class="danger">すべて削除する</button>
     </div>
   </form>
 </dialog>
@@ -1064,10 +1182,55 @@ function opts() {
     size: $("size").value,
     align: $("align").value,
     length_mm: $("length_mm").value,
+    margin_preset: $("margin_preset").value,
+    left_margin_mm: currentMargins()[0],
+    right_margin_mm: currentMargins()[1],
     ratios: currentRatios(),
     frame: $("frame").checked,
     frame_width: $("frame_width").value,
+    cut: $("cut").value,
+    copies: $("copies").value,
   };
+}
+
+// 余白プリセット (左, 右 mm)。「カスタム」のときは入力欄の値を使う。
+const MARGIN_PRESETS = {none: ["1", "0"], small: ["4", "3"], medium: ["6", "5"], large: ["8", "7"]};
+function currentMargins() {
+  const preset = $("margin_preset").value;
+  if (preset in MARGIN_PRESETS) return MARGIN_PRESETS[preset];
+  return [$("left_margin_mm").value, $("right_margin_mm").value];
+}
+// プリセット選択中は入力欄にその値を表示して無効化し、カスタムで有効にする。
+// カスタムで入力した値はプリセットに切り替えても覚えておく。
+let customMargins = ["4", "3"];
+function syncMarginInputs() {
+  const preset = $("margin_preset").value;
+  const custom = preset === "custom";
+  const [l, r] = custom ? customMargins : MARGIN_PRESETS[preset];
+  $("left_margin_mm").value = l;
+  $("right_margin_mm").value = r;
+  $("left_margin_mm").disabled = !custom;
+  $("right_margin_mm").disabled = !custom;
+}
+for (const id of ["left_margin_mm", "right_margin_mm"]) {
+  $(id).addEventListener("input", () => {
+    if ($("margin_preset").value === "custom") customMargins = [$("left_margin_mm").value, $("right_margin_mm").value];
+  });
+}
+$("margin_preset").addEventListener("change", syncMarginInputs);
+syncMarginInputs();
+// テンプレート/履歴の復元用。プリセット名が無い古いデータは値から推定する。
+function applyMargins(preset, left, right) {
+  if (!preset && !left && !right) preset = "small";
+  if (!preset) {
+    preset = "custom";
+    for (const [name, [l, r]] of Object.entries(MARGIN_PRESETS)) {
+      if (String(left || l) === l && String(right || r) === r) { preset = name; break; }
+    }
+  }
+  $("margin_preset").value = (preset in MARGIN_PRESETS || preset === "custom") ? preset : "small";
+  if (preset === "custom") customMargins = [left || "4", right || "3"];
+  syncMarginInputs();
 }
 
 // テキストの行数に合わせて比率入力欄を並べ直す (入力済みの値は保持)。
@@ -1106,7 +1269,7 @@ async function post(path, data) {
 // 本体に装着されているテープ幅を取得して表示する。
 async function detectTape() {
   const el = $("tape-status");
-  el.textContent = "装着テープ: 取得中...";
+  el.textContent = "装着テープ: 確認中";
   el.className = "";
   try {
     const r = await (await fetch("/api/tape")).json();
@@ -1114,19 +1277,19 @@ async function detectTape() {
       let s;
       if (r.tape_mm != null) {
         s = "装着テープ: " + r.tape_mm + "mm";
-        if (!r.supported) s += "（このドライバでは未対応の幅です）";
+        if (!r.supported) s += "（この幅には印刷できません）";
       } else {
-        s = "装着テープ: 未対応の幅です (index " + r.index + ")";
+        s = "装着テープ: 印刷できない幅です (index " + r.index + ")";
       }
-      if (r.mock) s += "（開発用モック表示）";
+      if (r.mock) s += "（開発用の仮の値）";
       el.textContent = s;
       el.className = r.supported ? "ok" : "err";
     } else {
-      el.textContent = "装着テープ: 取得できませんでした — " + r.error;
+      el.textContent = "装着テープを確認できませんでした: " + r.error;
       el.className = "err";
     }
   } catch (e) {
-    el.textContent = "装着テープ: 取得できませんでした — " + e;
+    el.textContent = "装着テープを確認できませんでした: " + e;
     el.className = "err";
   }
 }
@@ -1134,8 +1297,9 @@ $("btn-tape-detect").onclick = detectTape;
 
 async function init() {
   const cfg = await (await fetch("/api/config")).json();
+  // ドライバのパスや USB PID はサーバ設定の話なので画面には出さない。
   $("config").textContent = (cfg.dry_run ? "DRY_RUN モード (実機に送信しません) / " : "") +
-    "ドライバ: " + cfg.driver + " / PID: " + cfg.pid;
+    "機種: " + cfg.model + " (" + cfg.dpi + " dpi)";
   const fonts = (await (await fetch("/api/fonts")).json()).fonts;
   for (const f of fonts) {
     const o = document.createElement("option");
@@ -1143,10 +1307,86 @@ async function init() {
     $("font").appendChild(o);
   }
   await refreshTemplates();
+  // フォントとテンプレートが揃ってから、前回の入力内容を戻す。
+  restoreFormState();
   syncRatioInputs();
   detectTape();
   loadHistory();
 }
+
+// ------------------------------------------------------------------
+// 入力内容の保存と復元 (localStorage)
+// ブラウザ任せの復元 (F5) は JS で組み立てる欄が対象外で中途半端になる
+// ため、全項目を明示的に保存して読み込み時に戻す。
+// ------------------------------------------------------------------
+const FORM_STATE_KEY = "tepra-web-form";
+function collectFormState() {
+  return Object.assign(opts(), {
+    text: $("text").value,
+    tpl_name: $("tpl-name").value,
+    merge: {
+      src: document.querySelector('input[name="src"]:checked').value,
+      mode: document.querySelector('input[name="mode"]:checked').value,
+      csv_text: $("csv-text").value,
+      csv_encoding: $("csv-encoding").value,
+      series: [...document.querySelectorAll(".series-block")].map(b => [
+        b.querySelector("[data-series-name]").value, b.querySelector("[data-series-values]").value]),
+    },
+  });
+}
+let saveTimer = null;
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try { localStorage.setItem(FORM_STATE_KEY, JSON.stringify(collectFormState())); } catch (e) {}
+  }, 200);
+}
+function restoreFormState() {
+  let st = null;
+  try { st = JSON.parse(localStorage.getItem(FORM_STATE_KEY) || "null"); } catch (e) { return; }
+  if (!st || typeof st !== "object") return;
+  applyFormState(st);
+  $("tpl-name").value = st.tpl_name || "";
+  const m = st.merge || {};
+  for (const [name, value] of [["src", m.src || "csv"], ["mode", m.mode || "zip"]]) {
+    const radio = document.querySelector('input[name="' + name + '"][value="' + value + '"]');
+    if (radio) { radio.checked = true; radio.dispatchEvent(new Event("change")); }
+  }
+  $("csv-text").value = m.csv_text || "";
+  if (m.csv_encoding) $("csv-encoding").value = m.csv_encoding;
+  $("series-inputs").innerHTML = "";
+  for (const [name, values] of m.series || []) addSeriesBlock(name, values);
+}
+document.addEventListener("input", scheduleSave);
+document.addEventListener("change", scheduleSave);
+new MutationObserver(scheduleSave).observe($("series-inputs"), {childList: true});
+// ラベル欄を初期設定に戻す (差し込み印刷の入力は残す)。
+$("btn-reset-label").onclick = () => {
+  applyFormState({});
+  $("tpl-name").value = "";
+  clearPreview();
+  setMsg($("msg"), "ラベルを初期設定に戻しました", true);
+  scheduleSave();
+};
+// 差し込み印刷の入力と生成結果を初期設定に戻す (ラベル欄は残す)。
+$("btn-reset-merge").onclick = () => {
+  const csv = document.querySelector('input[name="src"][value="csv"]');
+  csv.checked = true; csv.dispatchEvent(new Event("change"));
+  document.querySelector('input[name="mode"][value="zip"]').checked = true;
+  $("csv-text").value = "";
+  $("csv-encoding").value = "auto";
+  $("csv-file").value = "";
+  csvFileB64 = null;
+  $("csv-encoding-status").textContent = "";
+  $("series-inputs").innerHTML = "";
+  currentLabels = [];
+  $("labels-count").textContent = "";
+  $("labels-list").innerHTML = "";
+  $("labels-list").style.display = "none";
+  $("matrix").innerHTML = "";
+  setMsg($("merge-msg"), "差し込み印刷を初期設定に戻しました", true);
+  scheduleSave();
+};
 async function refreshTemplates() {
   const tpls = (await (await fetch("/api/templates")).json()).templates;
   const sel = $("tpl-list");
@@ -1160,11 +1400,12 @@ async function refreshTemplates() {
 }
 
 // プレビュー SVG と実寸表示・ルーラーを描く (単発/差し込み共通)。
-let lastPreview = null;  // {feed_rows, length_mm}
+let lastPreview = null;  // {feed_rows, length_mm, dpi}
 function renderPreview(r) {
   const box = $("preview");
   box.innerHTML = '<div id="ruler" aria-hidden="true"></div>' + r.svg;
-  lastPreview = {feed_rows: r.feed_rows, length_mm: r.length_mm};
+  $("preview-empty").hidden = true;
+  lastPreview = {feed_rows: r.feed_rows, length_mm: r.length_mm, dpi: r.dpi || 360};
   const size = $("preview-size");
   if (r.length_mm != null) {
     size.textContent = "実寸: " + (r.tape_mm != null ? "約 " + r.length_mm + "mm × " + r.tape_mm + "mm（長さ × テープ幅）"
@@ -1174,14 +1415,23 @@ function renderPreview(r) {
   }
   $("ruler-note").style.display = r.length_mm != null ? "" : "none";
   requestAnimationFrame(drawRuler);
+  // プレビュー欄はページ上部にあるので、見えるところまで戻す。
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  $("preview-section").scrollIntoView({behavior: reduce ? "auto" : "smooth", block: "start"});
+}
+function clearPreview() {
+  $("preview").innerHTML = "";
+  $("preview-size").textContent = "";
+  $("ruler-note").style.display = "none";
+  $("preview-empty").hidden = false;
 }
 // ルーラー: プレビュー SVG の表示幅に合わせ、5mm 刻み (10mm ごとに数値) の
-// 目盛りを描く。SVG の 1 ドット = 1/208 インチとして換算する。
+// 目盛りを描く。SVG の 1 ドット = 1/dpi インチ (機種の解像度) として換算する。
 function drawRuler() {
   const ruler = $("ruler");
   const svg = $("preview") ? $("preview").querySelector("svg") : null;
   if (!ruler || !svg || !lastPreview || !lastPreview.feed_rows) return;
-  const totalMm = lastPreview.feed_rows * 25.4 / 208;
+  const totalMm = lastPreview.feed_rows * 25.4 / lastPreview.dpi;
   const w = svg.getBoundingClientRect().width;
   if (!w) return;
   ruler.style.width = w + "px";
@@ -1214,7 +1464,7 @@ async function showPreview(text) {
       renderPreview(r);
       setMsg($("msg"), (r.notes || []).join(" / "), true);
     } else {
-      setMsg($("msg"), "エラー: " + r.error, false);
+      setMsg($("msg"), "プレビューを作成できませんでした: " + r.error, false);
     }
   } finally {
     btn.disabled = false;
@@ -1223,39 +1473,114 @@ async function showPreview(text) {
 
 $("text").addEventListener("input", syncRatioInputs);
 
-$("btn-preview").onclick = () => showPreview($("text").value);
-$("btn-print").onclick = async () => {
+// 単発プレビュー用: テキスト内のプレースホルダ {{A}} を差し込みデータの
+// 1 件目 (CSV の最初のデータ行 / 各系列の 1 番目) で置き換える。値が
+// 見つからないプレースホルダがあればエラー文字列を返し、サーバへは送らない。
+const PLACEHOLDER_RE_JS = /\{\{\s*([^\s{}]+)\s*\}\}/g;
+function parseCsvRow(line) {
+  // ダブルクォート対応の簡易 CSV 1 行パース (サーバの csv モジュールと同等の範囲)。
+  const out = []; let cur = ""; let q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) {
+      if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === ",") { out.push(cur); cur = ""; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+function firstMergeValues() {
+  const src = document.querySelector('input[name="src"]:checked').value;
+  const values = {};
+  if (src === "csv") {
+    const lines = $("csv-text").value.replace(/^\ufeff/, "").split(/\r?\n/).filter(l => l.trim() !== "");
+    if (lines.length >= 2) {
+      const header = parseCsvRow(lines[0]).map(h => h.trim());
+      const row = parseCsvRow(lines[1]);
+      header.forEach((h, i) => { if (h && row[i] !== undefined) values[h] = row[i]; });
+    }
+  } else {
+    document.querySelectorAll(".series-block").forEach(block => {
+      const name = block.querySelector("[data-series-name]").value.trim();
+      const first = block.querySelector("[data-series-values]").value.split("\n").map(s => s.trim()).find(s => s !== "");
+      if (name && first !== undefined) values[name] = first;
+    });
+  }
+  return {src, values};
+}
+function substituteFirstValues(text) {
+  const names = [...new Set([...text.matchAll(PLACEHOLDER_RE_JS)].map(m => m[1]))];
+  if (!names.length) return {text};
+  const {src, values} = firstMergeValues();
+  const missing = names.filter(n => !(n in values));
+  if (missing.length) {
+    const where = src === "csv" ? "CSV データ（1 行目ヘッダ + 2 行目）" : "系列リスト（各系列の 1 番目）";
+    return {error: "プレースホルダ " + missing.map(n => "{{" + n + "}}").join(", ") + " の値が " + where + " にありません。差し込み印刷のデータを入力するか、プレースホルダを外してください。"};
+  }
+  return {text: text.replace(PLACEHOLDER_RE_JS, (_, n) => values[n]), substituted: names};
+}
+
+$("btn-preview").onclick = () => {
+  const r = substituteFirstValues($("text").value);
+  if (r.error) { setMsg($("msg"), r.error, false); return; }
+  showPreview(r.text).then(() => {
+    if (r.substituted && r.substituted.length && $("msg").classList.contains("ok")) {
+      setMsg($("msg"), "プレースホルダ (" + r.substituted.map(n => "{{" + n + "}}").join(", ") + ") は 1 件目の値で表示しています", true);
+    }
+  });
+};
+async function printSingle() {
   const btn = $("btn-print");
   btn.disabled = true;
   setMsg($("msg"), "");
   try {
     const r = await post("/api/print", {opts: opts(), text: $("text").value});
     if (r.ok) setMsg($("msg"), r.message + (r.detail ? "\n" + r.detail : ""), true);
-    else setMsg($("msg"), "エラー: " + r.error, false);
+    else setMsg($("msg"), "印刷できませんでした: " + r.error, false);
     loadHistory();
   } finally {
     btn.disabled = false;
   }
+}
+// プレースホルダ入りのテキストをそのまま印刷しようとしたら警告して確認する。
+$("btn-print").onclick = () => {
+  const names = [...new Set([...$("text").value.matchAll(PLACEHOLDER_RE_JS)].map(m => m[1]))];
+  if (!names.length) { printSingle(); return; }
+  $("dlg-print-placeholder-names").textContent = names.map(n => "{{" + n + "}}").join(", ");
+  setMsg($("msg"), "プレースホルダ " + names.map(n => "{{" + n + "}}").join(", ") + " は単発印刷では置き換えられません", false);
+  $("dlg-print-placeholder").showModal();
 };
+$("dlg-print-placeholder").addEventListener("close", () => {
+  const dlg = $("dlg-print-placeholder");
+  const v = dlg.returnValue;
+  dlg.returnValue = "";
+  if (v === "print") printSingle();
+  else setMsg($("msg"), "印刷していません", false);
+});
 
 $("btn-tpl-save").onclick = async () => {
   const name = $("tpl-name").value.trim();
-  if (!name) { setMsg($("msg"), "テンプレート名を入力してください", false); return; }
+  if (!name) { setMsg($("msg"), "保存するにはテンプレート名を入力してください", false); return; }
   const template = Object.assign(opts(), {text: $("text").value});
   await post("/api/templates", {name, template});
   await refreshTemplates();
   setMsg($("msg"), "テンプレート「" + name + "」を保存しました", true);
 };
-$("btn-tpl-load").onclick = () => {
-  const t = ($("tpl-list")._data || {})[$("tpl-list").value];
-  if (!t) return;
+// 設定一式 (テンプレート / 履歴の opts + text) をフォームに流し込む。
+function applyFormState(t) {
   $("tape").value = t.tape || "auto";
   $("font").value = t.font || "";
   $("size").value = t.size || "";
   $("align").value = t.align || "left";
   $("length_mm").value = t.length_mm || "";
+  applyMargins(t.margin_preset, t.left_margin_mm, t.right_margin_mm);
   $("frame").checked = !!t.frame;
   $("frame_width").value = t.frame_width || "2";
+  $("cut").value = t.cut || "full";
+  $("copies").value = t.copies || "1";
   $("text").value = t.text || "";
   syncRatioInputs();
   if (t.ratios) {
@@ -1264,11 +1589,16 @@ $("btn-tpl-load").onclick = () => {
       inp.value = parts[i] !== undefined ? parts[i] : "";
     });
   }
+}
+$("btn-tpl-load").onclick = () => {
+  const t = ($("tpl-list")._data || {})[$("tpl-list").value];
+  if (!t) return;
+  applyFormState(t);
   setMsg($("msg"), "テンプレートを読み込みました", true);
 };
 $("btn-tpl-delete").onclick = () => {
   const name = $("tpl-list").value;
-  if (!name) { setMsg($("msg"), "削除するテンプレートがありません", false); return; }
+  if (!name) { setMsg($("msg"), "削除するテンプレートを選んでください", false); return; }
   $("dlg-delete-name").textContent = name;
   $("dlg-delete").showModal();
 };
@@ -1312,7 +1642,7 @@ async function decodeCsvFile() {
       "文字コード: " + (names[r.encoding] || r.encoding) + (enc === "auto" ? "（自動判定）" : "（手動指定）");
     $("csv-encoding-status").className = "ok";
   } else {
-    $("csv-encoding-status").textContent = "文字コードの判定に失敗しました: " + r.error;
+    $("csv-encoding-status").textContent = "CSV を読み込めませんでした。文字コードを選び直してください: " + r.error;
     $("csv-encoding-status").className = "err";
   }
 }
@@ -1366,7 +1696,7 @@ $("btn-detect").onclick = () => {
   });
   box.innerHTML = "";
   if (!names.length) {
-    box.textContent = "プレースホルダが見つかりません。「系列を追加」で手動で追加もできます。";
+    box.textContent = "テキストにプレースホルダがありません。{{A}} のように書くか、「系列を追加」で追加してください。";
     return;
   }
   for (const n of names) addSeriesBlock(n, existing[n] || "");
@@ -1398,7 +1728,7 @@ $("btn-labels").onclick = async () => {
     payload = {source: "series", template: $("text").value, series, mode};
   }
   const r = await post("/api/labels", payload);
-  if (!r.ok) { setMsg($("merge-msg"), "エラー: " + (r.error || ""), false); return; }
+  if (!r.ok) { setMsg($("merge-msg"), "ラベルを生成できませんでした: " + (r.error || ""), false); return; }
   currentLabels = r.labels;
   let info = "生成: " + r.labels.length + " 件";
   if (r.meta && r.meta.lengths) {
@@ -1415,12 +1745,8 @@ $("btn-labels").onclick = async () => {
     item.textContent = (i + 1) + ": " + label.replace(/\n/g, " / ");
     item.onclick = async () => {
       const p = await post("/api/merge/preview", {opts: opts(), labels: currentLabels, index: i});
-      if (p.ok) {
-        renderPreview(p);
-        const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        window.scrollTo({top: 0, behavior: reduce ? "auto" : "smooth"});
-      }
-      else setMsg($("merge-msg"), "エラー: " + p.error, false);
+      if (p.ok) renderPreview(p);
+      else setMsg($("merge-msg"), "プレビューを作成できませんでした: " + p.error, false);
     };
     list.appendChild(item);
   });
@@ -1447,13 +1773,13 @@ $("btn-labels").onclick = async () => {
 let mergeJobId = null;
 let mergePollTimer = null;
 $("btn-merge-print").onclick = async () => {
-  if (!currentLabels.length) { setMsg($("merge-msg"), "先にラベルを生成してください", false); return; }
+  if (!currentLabels.length) { setMsg($("merge-msg"), "印刷するには先に「ラベルを生成」を押してください", false); return; }
   const btn = $("btn-merge-print");
   btn.disabled = true;
   setMsg($("merge-msg"), "");
   try {
     const r = await post("/api/merge/print", {opts: opts(), labels: currentLabels});
-    if (!r.ok) { setMsg($("merge-msg"), "エラー: " + (r.error || ""), false); btn.disabled = false; return; }
+    if (!r.ok) { setMsg($("merge-msg"), "印刷を開始できませんでした: " + (r.error || ""), false); btn.disabled = false; return; }
     mergeJobId = r.job_id;
     $("merge-progress").style.display = "";
     $("merge-progress-bar").max = r.total;
@@ -1463,7 +1789,7 @@ $("btn-merge-print").onclick = async () => {
     mergePollTimer = setInterval(pollMergeJob, 500);
     pollMergeJob();
   } catch (e) {
-    setMsg($("merge-msg"), "エラー: " + e, false);
+    setMsg($("merge-msg"), "印刷を開始できませんでした: " + e, false);
     btn.disabled = false;
   }
 };
@@ -1479,6 +1805,8 @@ async function pollMergeJob() {
   let text = r.done + " / " + r.total + " 件";
   if (r.state === "running" && r.current_label != null) {
     text += " — 印刷中: " + (r.current_index + 1) + " 件目「" + String(r.current_label).replace(/\n/g, " / ") + "」";
+  } else if (r.state === "running" && r.phase) {
+    text += " — " + r.phase;
   }
   $("merge-progress-text").textContent = text;
   if (r.state !== "running") {
@@ -1487,9 +1815,9 @@ async function pollMergeJob() {
     mergeJobId = null;
     $("btn-merge-print").disabled = false;
     $("btn-merge-cancel").disabled = true;
-    if (r.state === "done") setMsg($("merge-msg"), "完了: " + r.done + " 件印刷しました", true);
-    else if (r.state === "cancelled") setMsg($("merge-msg"), "キャンセルしました: " + r.done + " / " + r.total + " 件で停止", false);
-    else setMsg($("merge-msg"), "停止: " + r.done + " 件成功、" + (r.failed_index + 1) + " 件目「" + r.failed_label + "」で失敗: " + r.error, false);
+    if (r.state === "done") setMsg($("merge-msg"), r.done + " 件を印刷しました", true);
+    else if (r.state === "cancelled") setMsg($("merge-msg"), "送信前に取り消しました。印刷していません", false);
+    else setMsg($("merge-msg"), "印刷できませんでした: " + r.error, false);
     loadHistory();
   }
 }
@@ -1511,12 +1839,12 @@ $("tpl-import-file").onchange = async () => {
   try {
     parsed = JSON.parse(await f.text());
   } catch (e) {
-    setMsg($("msg"), "読み込み失敗: JSON として解釈できませんでした", false);
+    setMsg($("msg"), "テンプレートを読み込めませんでした。JSON ファイルではありません", false);
     return;
   }
   const incoming = parsed.templates && typeof parsed.templates === "object" ? parsed.templates : parsed;
   if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
-    setMsg($("msg"), "読み込み失敗: テンプレートの形式が違います", false);
+    setMsg($("msg"), "テンプレートを読み込めませんでした。このアプリで書き出したファイルを選んでください", false);
     return;
   }
   const existing = ($("tpl-list")._data) || {};
@@ -1531,7 +1859,7 @@ $("tpl-import-file").onchange = async () => {
 };
 async function doImport(incoming, strategy) {
   const r = await post("/api/templates/import", {templates: incoming, strategy});
-  if (!r.ok) { setMsg($("msg"), "読み込み失敗: " + (r.error || ""), false); return; }
+  if (!r.ok) { setMsg($("msg"), "テンプレートを読み込めませんでした: " + (r.error || ""), false); return; }
   await refreshTemplates();
   let msg = r.imported.length + " 件のテンプレートを読み込みました";
   const ren = Object.entries(r.renamed || {});
@@ -1559,7 +1887,7 @@ async function loadHistory() {
   } catch (e) { return; }
   list.innerHTML = "";
   if (!hist.length) {
-    list.innerHTML = '<p class="note">履歴はまだありません。</p>';
+    list.innerHTML = '<p class="note">履歴はまだありません。印刷するとここに残ります。</p>';
     return;
   }
   for (const entry of hist) {
@@ -1595,19 +1923,41 @@ async function loadHistory() {
         (errText ? ": " + errText : "");
       status.classList.add("err");
     }
+    const shortText = text.textContent.length > 30 ? text.textContent.slice(0, 30) + "…" : text.textContent;
+    const load = document.createElement("button");
+    load.type = "button";
+    load.textContent = "読み込む";
+    load.setAttribute("aria-label", "読み込む: " + shortText);
+    load.onclick = () => loadHistoryEntry(entry);
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = "再印刷";
+    btn.setAttribute("aria-label", "再印刷: " + shortText);
     btn.onclick = () => reprintHistory(entry.id, btn);
-    row.append(time, kind, text, status, btn);
+    row.append(time, kind, text, status, load, btn);
     list.appendChild(row);
   }
+}
+// 履歴の設定とテキストをフォームに戻す (印刷はしない)。差し込み印刷の
+// 履歴は元の CSV / 系列が保存されていないので、設定と先頭ラベルのみ。
+function loadHistoryEntry(entry) {
+  const opts = Object.assign({}, entry.opts || {});
+  if (entry.kind === "merge") {
+    const labels = entry.labels || [];
+    applyFormState(Object.assign(opts, {text: labels[0] || ""}));
+    setMsg($("msg"), "設定と 1 件目のラベル（全 " + labels.length + " 件）を読み込みました。元の CSV と系列は履歴に残っていません", true);
+  } else {
+    applyFormState(Object.assign(opts, {text: entry.text || ""}));
+    setMsg($("msg"), "履歴から読み込みました", true);
+  }
+  $("text").focus();
+  $("h-label").scrollIntoView({behavior: "smooth", block: "start"});
 }
 async function reprintHistory(id, btn) {
   btn.disabled = true;
   try {
     const r = await post("/api/history/reprint", {id});
-    if (!r.ok) { setMsg($("msg"), "再印刷エラー: " + (r.error || ""), false); return; }
+    if (!r.ok) { setMsg($("msg"), "再印刷できませんでした: " + (r.error || ""), false); return; }
     if (r.async) {
       // 差し込みの再印刷は進捗表示つきジョブとして開始する
       mergeJobId = r.job_id;
@@ -1638,11 +1988,12 @@ $("dlg-history-clear").addEventListener("close", async () => {
   if (v !== "clear") return;
   await post("/api/history/clear", {});
   await loadHistory();
-  setMsg($("msg"), "履歴をクリアしました", true);
+  setMsg($("msg"), "印刷履歴を削除しました", true);
 });
 
 init();
 </script>
+</main>
 </body>
 </html>
 """
@@ -1651,7 +2002,7 @@ init();
 def main():
     FONTS_DIR.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"TEPRA Web: http://{HOST}:{PORT}/  driver={DRIVER} dry_run={DRY_RUN}", flush=True)
+    print(f"TEPRA Web: http://{HOST}:{PORT}/  driver={DRIVER} model={MODEL} dry_run={DRY_RUN}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
