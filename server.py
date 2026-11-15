@@ -1025,11 +1025,25 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .row { margin: .5em 0; display: flex; gap: .5em; flex-wrap: wrap; align-items: center; }
   .field { display: flex; flex-direction: column; gap: .25rem; flex: 1 1 9em; margin-block: .25em; }
   .field[hidden] { display: none; }
+  /* チェックボックスに付属する短い入力は、欄名を上ではなく左に置く。
+     1 行の高さに収まり、チェックボックスと並べたときに揃う。 */
+  .field.inline { flex-direction: row; align-items: center; gap: .4em; flex: 0 1 auto; }
+  /* 設定欄は意味ごとに区切った格子に並べる。1 組 4 つを 1 行に収める
+     ため列数は固定し、入る幅があるかどうかはカード自身の幅で決める
+     (画面幅ではなく、2 列レイアウトのときの列幅で判断するため)。 */
+  .col { container-type: inline-size; }
+  .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5em; margin: .6em 0; }
+  .fields .field { margin-block: 0; min-width: 0; }
+  @container (min-width: 560px) {
+    .fields { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
   .field > label { font-size: .9em; }
   /* ボタンと高さを揃える (欄名が上にあるぶん、行の中で下端を合わせる) */
   .field > :where(input:not([type="checkbox"]):not([type="radio"]), select) { min-height: 2.4em; }
-  .row:has(> .field) { align-items: flex-end; }
-  .row:has(> .field) > :not(.field) { margin-block: .25em; }
+  /* 欄名が上にある入力欄がある行だけ下端を揃える。欄名が左にある
+     (.inline) だけの行は、既定どおり中央で揃えたほうが収まりが良い。 */
+  .row:has(> .field:not(.inline)) { align-items: flex-end; }
+  .row:has(> .field:not(.inline)) > :not(.field) { margin-block: .25em; }
   button { padding: .45em 1em; cursor: pointer; background: var(--surface); color: inherit; border: 1px solid var(--border); border-radius: 8px; min-height: 2.4em; box-sizing: border-box; }
   button:hover:not(:disabled) { background: var(--hover); }
   button:disabled { opacity: .55; cursor: default; }
@@ -1121,7 +1135,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <section class="card" id="label-section">
 <h2 id="h-label">ラベル</h2>
-<div class="row">
+<div class="fields">
   <div class="field">
     <label for="tape">テープ幅</label>
     <select id="tape">
@@ -1152,6 +1166,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </select>
     <span id="align-hint" class="visually-hidden">複数行、またはラベル長を指定したときに各行を揃えます</span>
   </div>
+</div>
+<div class="fields">
   <div class="field">
     <label for="length_mm">ラベル長(mm)</label>
     <input id="length_mm" type="number" min="10" max="500" inputmode="decimal" placeholder="指定なし">
@@ -1175,6 +1191,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <label for="right_margin_mm">右余白(mm)</label>
     <input id="right_margin_mm" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="3" disabled>
   </div>
+</div>
+<div class="fields">
   <div class="field">
     <label for="cut">カット</label>
     <select id="cut">
@@ -1191,16 +1209,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <p class="note" id="copies-note">同じラベルを連続で印刷します。差し込み印刷では各ラベルに適用されます。</p>
 <div class="row">
   <label><input type="checkbox" id="frame"> 枠線を付ける</label>
-  <div class="field" style="flex: 0 1 11em">
+  <div class="field inline">
     <label for="frame_width">太さ(ドット)</label>
-    <input id="frame_width" type="number" min="1" max="3" step="1" inputmode="numeric" value="2" disabled>
+    <input id="frame_width" type="number" min="1" max="3" step="1" inputmode="numeric" value="2" style="width: 5em" disabled>
   </div>
 </div>
 <div class="row">
   <label><input type="checkbox" id="cable"> ケーブル表示ラベル</label>
-  <div class="field" style="flex: 0 1 11em">
+  <div class="field inline">
     <label for="cable_mm">印刷エリア(mm)</label>
-    <input id="cable_mm" type="number" min="1" max="50" step="0.5" inputmode="decimal" placeholder="既定" disabled>
+    <input id="cable_mm" type="number" min="1" max="50" step="0.5" inputmode="decimal" placeholder="既定" style="width: 6em" disabled>
   </div>
   <span class="note">テープ上端の印刷エリアだけに印字します。既定は 24mm が 7.5mm、36mm が 12.5mm。はみ出すときは小さくしてください。</span>
 </div>
