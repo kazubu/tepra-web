@@ -144,25 +144,51 @@ def log(message):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", file=sys.stderr, flush=True)
 
 
-def run_driver(args, timeout=CLI_TIMEOUT):
+def run_driver(args, timeout=CLI_TIMEOUT, on_line=None):
     """ドライバを実行し (returncode, stdout, stderr) を返す。
 
-    ドライバの標準エラー出力はここで捕捉してしまうので、そのままでは
-    どこにも残らない。印刷の診断 (プリンタが動作中になったか、何秒で
-    idle に戻ったか) に要るので、ターミナルにも出す。
+    標準エラー出力は行が出るたびに読む。印刷は数分かかることがあり、
+    終わってからまとめて読むと進捗が取れないため。各行はターミナルにも
+    出す (ドライバの出力はここで捕捉してしまい、他に残らないので)。
+    on_line(line) が True を返した行はログに出さない (進捗行など)。
     """
     t0 = time.monotonic()
+    log(f"driver: {' '.join(args[1:])}")
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # 標準出力は別スレッドで吸い出す (パイプが詰まると書き手が止まるため)。
+    out = []
+    reader = threading.Thread(target=lambda: out.append(proc.stdout.read()), daemon=True)
+    reader.start()
+    timed_out = threading.Event()
+
+    def on_timeout():
+        timed_out.set()
+        proc.kill()
+
+    watchdog = threading.Timer(timeout, on_timeout)
+    watchdog.start()
+    err_lines = []
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        log(f"driver timeout after {timeout}s: {' '.join(args[1:])}")
-        raise
+        for line in proc.stderr:
+            line = line.rstrip("\n")
+            # on_line が処理した行 (進捗など) はログにも stderr にも残さない。
+            # 数が多く、要約だけで足りるため。
+            if on_line is not None and on_line(line):
+                continue
+            err_lines.append(line)
+            if line.strip():
+                log(f"  | {line}")
+        rc = proc.wait()
+    finally:
+        watchdog.cancel()
+    reader.join(timeout=5)
+    stderr = "\n".join(err_lines)
     took = time.monotonic() - t0
-    log(f"driver rc={proc.returncode} in {took:.1f}s: {' '.join(args[1:])}")
-    for line in (proc.stderr or "").splitlines():
-        if line.strip():
-            log(f"  | {line}")
-    return proc.returncode, proc.stdout, proc.stderr
+    if timed_out.is_set():
+        log(f"driver timeout after {timeout}s: {' '.join(args[1:])}")
+        raise subprocess.TimeoutExpired(args, timeout, stderr=stderr)
+    log(f"driver rc={rc} in {took:.1f}s")
+    return rc, (out[0] if out else ""), stderr
 
 
 # プリンタの物理解像度 (driver の Model::dpi と同じ値: SR3700P 270 / SR3900P 360)。
@@ -258,7 +284,12 @@ def do_feed(mm, cut):
     return {"ok": True, "message": f"テープを {mm:g}mm {what}" + ("（DRY_RUN）" if DRY_RUN else "")}
 
 
-def do_print_labels(opts, labels, cancel=None):
+# ドライバが 64KB ごとに出す送信進捗 (プリンタは印刷した分しか受け取らない
+# ので、送信済みバイト数は印刷の進み具合でもある)。
+PROGRESS_RE = re.compile(r"^progress sent=(\d+) total=(\d+)$")
+
+
+def do_print_labels(opts, labels, cancel=None, progress=None):
     """複数ラベルを 1 ジョブとして印刷する (DRY_RUN 時はダンプ)。
 
     ドライバの --labels-file (ASCII RS 区切り) に渡す。ジョブ内では
@@ -267,7 +298,24 @@ def do_print_labels(opts, labels, cancel=None):
 
     cancel (threading.Event) が渡された場合、CLI_LOCK を取った直後 (ドライバ
     起動前) にも確認し、セットされていれば送信せずに cancelled を返す。
+
+    progress が渡された場合、送信が進むたびに progress(sent, total) を呼ぶ。
     """
+    last_pct = [0]
+
+    def on_line(line):
+        m = PROGRESS_RE.match(line.strip())
+        if not m:
+            return False
+        sent, total = int(m.group(1)), int(m.group(2))
+        if progress is not None:
+            progress(sent, total)
+        # 進捗行は数が多いので、ログには 25% ごとにだけ出す。
+        pct = sent * 100 // max(total, 1)
+        if pct >= last_pct[0] + 25 or sent == total:
+            last_pct[0] = pct
+            log(f"  | 送信 {pct}% ({sent}/{total} bytes)")
+        return True
     args, notes = build_driver_args(opts)
     with tempfile.TemporaryDirectory() as td:
         if len(labels) == 1:
@@ -297,7 +345,9 @@ def do_print_labels(opts, labels, cancel=None):
         with CLI_LOCK:
             if cancel is not None and cancel.is_set():
                 return {"ok": False, "cancelled": True, "error": "送信前に取り消しました"}
-            rc, _out, err = run_driver(full, timeout=CLI_TIMEOUT + 180 + 30 * len(labels))
+            rc, _out, err = run_driver(
+                full, timeout=CLI_TIMEOUT + 180 + 30 * len(labels), on_line=on_line
+            )
         if rc != 0:
             return {"ok": False, "error": err.strip() or f"driver exited {rc}"}
         return {"ok": True, "message": "印刷しました。", "notes": notes, "detail": err.strip()}
@@ -464,7 +514,16 @@ def _merge_worker(job, labels, opts):
             state = "cancelled"
         else:
             job["phase"] = f"{len(labels)} 件を 1 ジョブとして送信・印刷中"
-            r = do_print_labels(opts, labels, cancel=job["_cancel"])
+
+            def progress(sent, total):
+                # プリンタは印刷した分しかバイトを受け取らないので、送信済み
+                # バイト数をラベル枚数に割り戻して進捗とする (おおよその値)。
+                if total <= 0:
+                    return
+                job["done"] = min(len(labels), sent * len(labels) // total)
+                job["phase"] = f"{len(labels)} 件を 1 ジョブとして印刷中 ({sent * 100 // total}% 送信)"
+
+            r = do_print_labels(opts, labels, cancel=job["_cancel"], progress=progress)
             job["detail"] = (r.get("detail") or "").strip() or None
             if r.get("ok"):
                 job["done"] = len(labels)
