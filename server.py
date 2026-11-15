@@ -962,7 +962,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   table.matrix { border-collapse: collapse; }
   table.matrix td, table.matrix th { border: 1px solid var(--border); padding: .2em .5em; }
   .labels-list { max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: .3em; display: flex; flex-direction: column; gap: 2px; }
-  .labels-list button { text-align: left; border-color: transparent; min-height: 0; padding: .15em .4em; white-space: pre-wrap; word-break: break-all; }
+  /* flex: none がないと、件数が多いときに項目が縮んでスクロールせず潰れる */
+  .labels-list button { flex: none; text-align: left; border-color: transparent; min-height: 0; padding: .15em .4em; white-space: pre-wrap; word-break: break-all; }
   .note { color: var(--muted); font-size: .9em; }
   .button { display: inline-flex; align-items: center; padding: .45em 1em; min-height: 2.4em; box-sizing: border-box; background: var(--surface); color: inherit; border: 1px solid var(--border); border-radius: 8px; text-decoration: none; cursor: pointer; }
   .button:hover { background: var(--hover); }
