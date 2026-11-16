@@ -1288,11 +1288,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <div class="fields">
   <div class="field">
-    <label for="vertical">縦書き</label>
+    <label for="vertical">向き</label>
     <select id="vertical" aria-describedby="vertical-note">
-      <option value="">なし</option>
-      <option value="stacked">文字を縦に積む</option>
-      <option value="rotated">ラベルを 90° 回す</option>
+      <option value="">横書き</option>
+      <option value="stacked">縦書き</option>
+      <option value="rotated">縦向き横書き</option>
     </select>
   </div>
   <div class="field">
@@ -1309,7 +1309,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 <p class="note" id="copies-note">同じラベルを連続で印刷します。差し込み印刷では各ラベルに適用されます。</p>
-<p class="note" id="vertical-note">縦書きはテープを縦に貼る向きです。「文字を縦に積む」は 1 文字ずつ縦に並べ、「ラベルを 90° 回す」は行をテープ幅方向に書きます。どちらもラベル長と行ごとの比率は使えません。</p>
+<p class="note" id="vertical-note">「縦書き」と「縦向き横書き」はテープを縦に貼る向きです。縦書きは 1 文字ずつ縦に並べ、改行で列が変わります。縦向き横書きは文字を横書きのまま、行をテープ幅方向に書きます。どちらもラベル長と行ごとの比率は使えません。</p>
 <div class="row">
   <label><input type="checkbox" id="frame"> 枠線を付ける</label>
   <div class="field inline">
