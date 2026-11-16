@@ -1391,6 +1391,35 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <p class="note">選択したラベルを 1 ジョブで送ります。送信後はキャンセルできません。</p>
 </div>
 <div id="merge-msg" class="msg" role="status"></div>
+<dialog id="dlg-seq" aria-labelledby="dlg-seq-title">
+  <h2 id="dlg-seq-title">連番を入れる</h2>
+  <p class="note" id="dlg-seq-target"></p>
+  <div class="fields">
+    <div class="field">
+      <label for="seq-from">開始</label>
+      <input id="seq-from" type="number" step="1" inputmode="numeric" value="1">
+    </div>
+    <div class="field">
+      <label for="seq-to">終了</label>
+      <input id="seq-to" type="number" step="1" inputmode="numeric" value="10">
+    </div>
+    <div class="field">
+      <label for="seq-step">増分</label>
+      <input id="seq-step" type="number" step="1" inputmode="numeric" value="1">
+    </div>
+    <div class="field">
+      <label for="seq-pad">桁数</label>
+      <input id="seq-pad" type="number" min="0" max="12" step="1" inputmode="numeric" value="0" placeholder="0">
+    </div>
+  </div>
+  <p class="note" id="seq-preview" role="status"></p>
+  <form method="dialog">
+    <div class="row" style="justify-content: flex-end">
+      <button value="cancel" autofocus>キャンセル</button>
+      <button value="fill" class="primary" id="btn-seq-fill">この内容で入れる</button>
+    </div>
+  </form>
+</dialog>
 </section>
 
 <section class="card">
@@ -1960,6 +1989,72 @@ $("csv-file").onchange = async () => {
 };
 $("csv-encoding").onchange = decodeCsvFile;
 // 系列ブロック (名前入力 + 値テキストエリア + 削除ボタン) を1つ追加する。
+// 連番 (SW-001 ... SW-048 のような用途)。接頭辞はテキスト側で
+// 「SW-{{A}}」と書けるので、ここで作るのは数値だけ。
+const SEQ_MAX = 1000;
+function sequenceValues(from, to, step, pad) {
+  if (![from, to, step].every(Number.isFinite)) return {error: "開始・終了・増分は数値で入れてください"};
+  if (!Number.isInteger(step) || step === 0) return {error: "増分は 0 以外の整数にしてください"};
+  if (step > 0 ? to < from : to > from) return {error: "増分の向きでは開始から終了に届きません"};
+  const count = Math.floor(Math.abs(to - from) / Math.abs(step)) + 1;
+  if (count > SEQ_MAX) return {error: count + " 件になります。" + SEQ_MAX + " 件までにしてください"};
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const v = from + i * step;
+    out.push(v < 0 ? "-" + String(Math.abs(v)).padStart(pad, "0") : String(v).padStart(pad, "0"));
+  }
+  return {values: out};
+}
+let seqTarget = null;
+function seqFields() {
+  return {
+    from: parseInt($("seq-from").value, 10),
+    to: parseInt($("seq-to").value, 10),
+    step: parseInt($("seq-step").value, 10),
+    pad: Math.max(0, Math.min(12, parseInt($("seq-pad").value, 10) || 0)),
+  };
+}
+function updateSeqPreview() {
+  const f = seqFields();
+  const r = sequenceValues(f.from, f.to, f.step, f.pad);
+  const el = $("seq-preview");
+  if (r.error) {
+    el.textContent = r.error;
+    el.className = "note err";
+    $("btn-seq-fill").disabled = true;
+    return;
+  }
+  const head = r.values.slice(0, 3).join(", ");
+  const tail = r.values.length > 3 ? " … " + r.values[r.values.length - 1] : "";
+  el.textContent = head + tail + "（" + r.values.length + " 件）";
+  el.className = "note";
+  $("btn-seq-fill").disabled = false;
+}
+function openSequenceDialog(block) {
+  seqTarget = block;
+  const name = block.querySelector("[data-series-name]").value.trim();
+  $("dlg-seq-target").textContent = name ? "系列 {{" + name + "}} の値を置き換えます" : "この系列の値を置き換えます";
+  updateSeqPreview();
+  $("dlg-seq").showModal();
+}
+for (const id of ["seq-from", "seq-to", "seq-step", "seq-pad"]) {
+  $(id).addEventListener("input", updateSeqPreview);
+}
+$("dlg-seq").addEventListener("close", () => {
+  const dlg = $("dlg-seq");
+  const v = dlg.returnValue;
+  dlg.returnValue = "";
+  if (v !== "fill" || !seqTarget) { seqTarget = null; return; }
+  const f = seqFields();
+  const r = sequenceValues(f.from, f.to, f.step, f.pad);
+  if (r.error) { setMsg($("merge-msg"), r.error, false); seqTarget = null; return; }
+  const ta = seqTarget.querySelector("[data-series-values]");
+  ta.value = r.values.join("\n");
+  ta.dispatchEvent(new Event("input", {bubbles: true}));
+  setMsg($("merge-msg"), r.values.length + " 件の連番を入れました", true);
+  seqTarget = null;
+});
+
 function addSeriesBlock(name, values) {
   const box = $("series-inputs");
   const div = document.createElement("div");
@@ -1972,6 +2067,10 @@ function addSeriesBlock(name, values) {
   nameInp.style.width = "8em";
   nameInp.value = name || "";
   nameInp.dataset.seriesName = "";
+  const seq = document.createElement("button");
+  seq.type = "button";
+  seq.textContent = "連番を入れる";
+  seq.onclick = () => openSequenceDialog(div);
   const del = document.createElement("button");
   del.type = "button";
   del.textContent = "この系列を削除";
@@ -1979,6 +2078,7 @@ function addSeriesBlock(name, values) {
   head.appendChild(document.createTextNode("系列 {{"));
   head.appendChild(nameInp);
   head.appendChild(document.createTextNode("}}"));
+  head.appendChild(seq);
   head.appendChild(del);
   const ta = document.createElement("textarea");
   ta.rows = 4;
