@@ -145,18 +145,26 @@ def build_driver_args(opts):
     return args, notes
 
 
+class DriverCancelled(Exception):
+    """送信中にキャンセルされ、ドライバを終了させた。"""
+
+
 def log(message):
     """サーバを起動したターミナルに 1 行ログを出す (HTTP ログと同じ出力先)。"""
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", file=sys.stderr, flush=True)
 
 
-def run_driver(args, timeout=CLI_TIMEOUT, on_line=None):
+def run_driver(args, timeout=CLI_TIMEOUT, on_line=None, cancel=None):
     """ドライバを実行し (returncode, stdout, stderr) を返す。
 
     標準エラー出力は行が出るたびに読む。印刷は数分かかることがあり、
     終わってからまとめて読むと進捗が取れないため。各行はターミナルにも
     出す (ドライバの出力はここで捕捉してしまい、他に残らないので)。
     on_line(line) が True を返した行はログに出さない (進捗行など)。
+
+    cancel (threading.Event) が渡され、実行中にセットされた場合は
+    ドライバを終了させる。送信途中なら、そこから先のデータは
+    プリンタに届かない。
     """
     t0 = time.monotonic()
     log(f"driver: {' '.join(args[1:])}")
@@ -173,6 +181,21 @@ def run_driver(args, timeout=CLI_TIMEOUT, on_line=None):
 
     watchdog = threading.Timer(timeout, on_timeout)
     watchdog.start()
+    stop_watch = threading.Event()
+    cancelled = threading.Event()
+
+    def watch_cancel():
+        while not stop_watch.wait(0.2):
+            if cancel is not None and cancel.is_set():
+                cancelled.set()
+                log("キャンセル: ドライバを終了します")
+                proc.terminate()
+                return
+
+    canceller = None
+    if cancel is not None:
+        canceller = threading.Thread(target=watch_cancel, daemon=True)
+        canceller.start()
     err_lines = []
     # 同じ行の繰り返し (ラベルごとに出る警告など) はまとめる。100 件の
     # 差し込み印刷で同じ行が 100 回流れるのを避けるため。
@@ -205,6 +228,7 @@ def run_driver(args, timeout=CLI_TIMEOUT, on_line=None):
         rc = proc.wait()
     finally:
         watchdog.cancel()
+        stop_watch.set()
     reader.join(timeout=5)
     stderr = "\n".join(err_lines)
     took = time.monotonic() - t0
@@ -212,6 +236,8 @@ def run_driver(args, timeout=CLI_TIMEOUT, on_line=None):
         log(f"driver timeout after {timeout}s: {' '.join(args[1:])}")
         raise subprocess.TimeoutExpired(args, timeout, stderr=stderr)
     log(f"driver rc={rc} in {took:.1f}s")
+    if cancelled.is_set():
+        raise DriverCancelled(stderr)
     return rc, (out[0] if out else ""), stderr
 
 
@@ -320,6 +346,24 @@ def do_feed(mm, cut):
 PROGRESS_RE = re.compile(r"^progress sent=(\d+) total=(\d+)$")
 
 
+def do_abort():
+    """印刷中のジョブをプリンタ側で止める (--abort = SOFT_RESET)。"""
+    if DRY_RUN:
+        return {"ok": True, "message": "DRY_RUN: 中断は送信していません"}
+    args = [DRIVER, "--model", MODEL, "--abort"]
+    if VID:
+        args += ["--vid", VID]
+    if PID:
+        args += ["--pid", PID]
+    try:
+        rc, out, err = run_driver(args, timeout=30)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    if rc != 0:
+        return {"ok": False, "error": err.strip() or f"driver exited {rc}"}
+    return {"ok": True, "message": out.strip()}
+
+
 def do_print_labels(opts, labels, cancel=None, progress=None):
     """複数ラベルを 1 ジョブとして印刷する (DRY_RUN 時はダンプ)。
 
@@ -380,7 +424,7 @@ def do_print_labels(opts, labels, cancel=None, progress=None):
             if cancel is not None and cancel.is_set():
                 return {"ok": False, "cancelled": True, "error": "送信前に取り消しました"}
             rc, _out, err = run_driver(
-                full, timeout=CLI_TIMEOUT + 180 + 30 * len(labels), on_line=on_line
+                full, timeout=CLI_TIMEOUT + 180 + 30 * len(labels), on_line=on_line, cancel=cancel
             )
         if rc != 0:
             return {"ok": False, "error": err.strip() or f"driver exited {rc}"}
@@ -543,8 +587,8 @@ def merge_job_view(job):
 
 def _merge_worker(job, labels, opts):
     # 全ラベルを 1 ジョブで送る (ラベル間のカット設定を活かすため)。
-    # 送信後はプリンタ側で一気に印刷されるので、途中キャンセルは
-    # 送信前にしか効かない。
+    # キャンセルは 2 段構え: 送信前なら送らずに終わり、送信中なら
+    # ドライバを止めて残りを送らず、プリンタにも中断を指示する。
     state = "done"
     error = None
     try:
@@ -570,6 +614,13 @@ def _merge_worker(job, labels, opts):
             else:
                 state = "error"
                 error = r.get("error", "unknown error")
+    except DriverCancelled:
+        # 送信途中で止めた。残りのデータは送られていないが、プリンタの
+        # バッファに入ったぶんは印刷される。SOFT_RESET で止めにいく。
+        state = "cancelled"
+        job["aborted_mid_job"] = True
+        result = do_abort()
+        job["abort_error"] = None if result.get("ok") else result.get("error")
     except Exception as e:  # タイムアウト等でもジョブを「実行中」のまま残さない
         state = "error"
         error = f"{type(e).__name__}: {e}"
@@ -609,6 +660,8 @@ def start_merge_job(labels, opts):
         "error": None,
         "phase": None,
         "detail": None,
+        "aborted_mid_job": False,
+        "abort_error": None,
         "_cancel": threading.Event(),
     }
     with MERGE_JOBS_LOCK:
@@ -1413,7 +1466,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span id="merge-progress-text" role="status"></span>
     <button id="btn-merge-cancel" type="button">キャンセル</button>
   </div>
-  <p class="note">選択したラベルを 1 ジョブで送ります。送信後はキャンセルできません。</p>
+  <p class="note">選択したラベルを 1 ジョブで送ります。キャンセルすると、送信前なら印刷されず、送信中なら残りを送らずにプリンタを止めます。</p>
 </div>
 <div id="merge-msg" class="msg" role="status"></div>
 <dialog id="dlg-seq" aria-labelledby="dlg-seq-title">
@@ -2324,7 +2377,15 @@ async function pollMergeJob() {
     $("btn-merge-print").disabled = false;
     $("btn-merge-cancel").disabled = true;
     if (r.state === "done") setMsg($("merge-msg"), r.done + " 件を印刷しました" + (r.detail ? "\n" + r.detail : ""), true);
-    else if (r.state === "cancelled") setMsg($("merge-msg"), "送信前に取り消しました。印刷していません", false);
+    else if (r.state === "cancelled") {
+      if (r.aborted_mid_job) {
+        let m = "印刷中に止めました。送った分の一部は印刷されます。テープは切れていないので、必要なら「送ってカット」してください";
+        if (r.abort_error) m += "（プリンタへの中断指示は失敗しました: " + r.abort_error + "）";
+        setMsg($("merge-msg"), m, false);
+      } else {
+        setMsg($("merge-msg"), "送信前に取り消しました。印刷していません", false);
+      }
+    }
     else setMsg($("merge-msg"), "印刷できませんでした: " + r.error, false);
     loadHistory();
   }
