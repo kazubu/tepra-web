@@ -244,10 +244,13 @@ def resolve_tape_mm(opts):
 def do_preview(opts, text):
     """CLI の --preview-out で SVG を生成して返す (印刷経路と同一描画)。
 
+    {{today}} などの組み込みプレースホルダは、印刷と同じくここで展開する。
+
     応答には実寸情報も含める: SVG の width 属性 = 送り方向の行数
     (ドット数) なので、360 dpi で mm に換算してラベル長とする。
     """
     args, notes = build_driver_args(opts)
+    text = expand_builtins(text)
     with tempfile.TemporaryDirectory() as td:
         svg_path = Path(td) / "preview.svg"
         full = args + ["--preview-out", str(svg_path), text]
@@ -345,6 +348,9 @@ def do_print_labels(opts, labels, cancel=None, progress=None):
             log(f"  | 送信 {pct}% ({sent}/{total} bytes)")
         return True
     args, notes = build_driver_args(opts)
+    # 組み込みプレースホルダはジョブを組み立てる直前に展開する。日付を
+    # 生成時刻ではなく印刷時刻にするため。
+    labels = [expand_builtins(label) for label in labels]
     with tempfile.TemporaryDirectory() as td:
         if len(labels) == 1:
             target = [labels[0]]
@@ -625,6 +631,25 @@ def get_merge_job(job_id):
 # ---------------------------------------------------------------------
 # 差し込み: ラベル文字列の生成
 # ---------------------------------------------------------------------
+
+# 印刷/プレビューの時点で展開する組み込みプレースホルダ。差し込みデータに
+# 同名の列があればそちらが先に置換されるので、データが優先される。
+BUILTIN_PLACEHOLDERS = {
+    "today": "%Y-%m-%d",
+    "now": "%Y-%m-%d %H:%M",
+}
+
+
+def expand_builtins(text, now=None):
+    """{{today}} / {{now}} を実行時刻で置き換える。"""
+    now = now or datetime.now()
+
+    def repl(m):
+        fmt = BUILTIN_PLACEHOLDERS.get(m.group(1))
+        return now.strftime(fmt) if fmt else m.group(0)
+
+    return PLACEHOLDER_RE.sub(repl, text)
+
 
 def substitute(template_text, values):
     def repl(m):
@@ -1237,7 +1262,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="field">
   <label for="text">印刷テキスト</label>
   <textarea id="text" rows="3" aria-describedby="text-hint" placeholder="例: HOST-A&#10;10.0.0.1"></textarea>
-  <span id="text-hint" class="note">改行で複数行になります。差し込みは {{A}} のように書きます。</span>
+  <span id="text-hint" class="note">改行で複数行になります。差し込みは {{A}} のように書きます。{{today}} {{now}} は印刷時の日時になります。</span>
 </div>
 <div class="row" role="group" aria-labelledby="ratios-label">
   <span id="ratios-label">行ごとのサイズ比率:</span>
@@ -1807,6 +1832,10 @@ $("text").addEventListener("input", syncRatioInputs);
 // 1 件目 (CSV の最初のデータ行 / 各系列の 1 番目) で置き換える。値が
 // 見つからないプレースホルダがあればエラー文字列を返し、サーバへは送らない。
 const PLACEHOLDER_RE_JS = /\{\{\s*([^\s{}]+)\s*\}\}/g;
+// 印刷/プレビューのときにサーバが日時で置き換えるもの。差し込みデータに
+// 同名の列があればそちらが勝つので、ここでは「値が無くても困らない名前」
+// として扱う。
+const BUILTIN_PLACEHOLDERS = ["today", "now"];
 function parseCsvRow(line) {
   // ダブルクォート対応の簡易 CSV 1 行パース (サーバの csv モジュールと同等の範囲)。
   const out = []; let cur = ""; let q = false;
@@ -1842,7 +1871,8 @@ function firstMergeValues() {
   return {src, values};
 }
 function substituteFirstValues(text) {
-  const names = [...new Set([...text.matchAll(PLACEHOLDER_RE_JS)].map(m => m[1]))];
+  const names = [...new Set([...text.matchAll(PLACEHOLDER_RE_JS)].map(m => m[1]))]
+    .filter(n => !BUILTIN_PLACEHOLDERS.includes(n));
   if (!names.length) return {text};
   const {src, values} = firstMergeValues();
   const missing = names.filter(n => !(n in values));
@@ -1877,7 +1907,8 @@ async function printSingle() {
 }
 // プレースホルダ入りのテキストをそのまま印刷しようとしたら警告して確認する。
 $("btn-print").onclick = () => {
-  const names = [...new Set([...$("text").value.matchAll(PLACEHOLDER_RE_JS)].map(m => m[1]))];
+  const names = [...new Set([...$("text").value.matchAll(PLACEHOLDER_RE_JS)].map(m => m[1]))]
+    .filter(n => !BUILTIN_PLACEHOLDERS.includes(n));
   if (!names.length) { printSingle(); return; }
   $("dlg-print-placeholder-names").textContent = names.map(n => "{{" + n + "}}").join(", ");
   setMsg($("msg"), "プレースホルダ " + names.map(n => "{{" + n + "}}").join(", ") + " は単発印刷では置き換えられません", false);
