@@ -364,6 +364,21 @@ offset 32 は公式ドライバ側でも揺れる意味不明のフラグ)。
 確定しました (ドット数 = 幅mm × 12 を 8 の倍数に切り上げ、384 で頭打ち。
 補助バイトは 4mm のみ 18 という例外値)。
 
+## スクリプトから印刷する (HTTP API)
+
+画面が使っているのと同じ API を curl やスクリプトから叩けます。台帳や
+IPAM からラベルを出す用途を想定しています。エンドポイント一覧、`opts` の
+全項目、まとめて印刷するシェルスクリプトの例は
+[`docs/api.md`](docs/api.md) にあります。
+
+```bash
+curl -s http://printer.local:8090/api/print \
+  -H 'Content-Type: application/json' \
+  -d '{"opts": {"tape": "9", "cut": "half"}, "text": "SW-001\n10.0.0.1"}'
+```
+
+認証はありません。外に出す場合はリバースプロキシ側で認証してください。
+
 ## トラブルシュート
 
 - **"TEPRA printer not found"**: プリンタの電源/USB 接続と、
