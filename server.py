@@ -2413,7 +2413,7 @@ async function pollMergeJob() {
     if (r.state === "done") setMsg($("merge-msg"), r.done + " 件を印刷しました" + (r.detail ? "\n" + r.detail : ""), true);
     else if (r.state === "cancelled") {
       if (r.aborted_mid_job) {
-        let m = "印刷中に止めました。送った分の一部は印刷されます。テープは切れていないので、必要なら「送ってカット」してください";
+        let m = "印刷中に止めました。印刷中だったラベルは最後まで出てカットされ、そこで止まります（カットなし設定なら切れません）";
         if (r.abort_error) m += "（プリンタへの中断指示は失敗しました: " + r.abort_error + "）";
         setMsg($("merge-msg"), m, false);
       } else {
