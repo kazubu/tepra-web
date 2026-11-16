@@ -90,19 +90,26 @@ def build_driver_args(opts):
     elif DRY_RUN:
         args += ["--tape-mm", DRY_TAPE_MM]
         notes.append(f"DRY_RUN: テープ幅は {DRY_TAPE_MM}mm と仮定")
+    # 縦書き。ドライバ側で --line-ratios / --max-tape-length-mm とは
+    # 併用できないので、Web からもそれらを送らない。
+    vertical = str(opts.get("vertical", "") or "").strip()
+    if vertical not in ("stacked", "rotated"):
+        vertical = ""
     font = opts.get("font", "")
     if font:
         args += ["--font", str(Path(FONTS_DIR) / font)]
     size = opts.get("size", "")
     if size not in ("", None):
         args += ["--size", str(size)]
-    ratios = opts.get("ratios", "")
+    ratios = "" if vertical else opts.get("ratios", "")
     if isinstance(ratios, (list, tuple)):
         ratios = ",".join(str(r) for r in ratios if str(r).strip() not in ("", "None"))
     if ratios not in ("", None):
         # 行ごとのサイズ比率。個数不一致はドライバ側がエラーにする。ラベル長
         # との併用は固定長 (折り返しなし、収まらなければエラー) になる。
         args += ["--line-ratios", str(ratios)]
+    if vertical:
+        args += ["--vertical", vertical]
     align = opts.get("align", "left")
     if align in ("left", "center", "right"):
         args += ["--align", align]
@@ -115,7 +122,7 @@ def build_driver_args(opts):
         if frame_mm:
             # 枠線の横幅 (送り方向)。空ならドライバが文字を囲む。
             args += ["--frame-mm", frame_mm]
-    length_mm = opts.get("length_mm", "")
+    length_mm = "" if vertical else opts.get("length_mm", "")
     if length_mm not in ("", None):
         args += ["--max-tape-length-mm", str(length_mm)]
     for key, flag in (("left_margin_mm", "--left-margin-mm"), ("right_margin_mm", "--right-margin-mm")):
@@ -1129,6 +1136,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   button { padding: .45em 1em; cursor: pointer; background: var(--surface); color: inherit; border: 1px solid var(--border); border-radius: 8px; min-height: 2.4em; box-sizing: border-box; }
   button:hover:not(:disabled) { background: var(--hover); }
   button:disabled { opacity: .55; cursor: default; }
+  /* 無効な入力欄にも、ボタンと同じ見た目の手がかりを付ける */
+  :where(input, select, textarea):disabled { opacity: .55; cursor: default; }
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
   button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
   button.danger { background: var(--err); border-color: var(--err); color: var(--on-err); font-weight: 600; }
@@ -1279,6 +1288,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <div class="fields">
   <div class="field">
+    <label for="vertical">縦書き</label>
+    <select id="vertical" aria-describedby="vertical-note">
+      <option value="">なし</option>
+      <option value="stacked">文字を縦に積む</option>
+      <option value="rotated">ラベルを 90° 回す</option>
+    </select>
+  </div>
+  <div class="field">
     <label for="cut">カット</label>
     <select id="cut">
       <option value="full">フルカット</option>
@@ -1292,6 +1309,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 <p class="note" id="copies-note">同じラベルを連続で印刷します。差し込み印刷では各ラベルに適用されます。</p>
+<p class="note" id="vertical-note">縦書きはテープを縦に貼る向きです。「文字を縦に積む」は 1 文字ずつ縦に並べ、「ラベルを 90° 回す」は行をテープ幅方向に書きます。どちらもラベル長と行ごとの比率は使えません。</p>
 <div class="row">
   <label><input type="checkbox" id="frame"> 枠線を付ける</label>
   <div class="field inline">
@@ -1538,6 +1556,7 @@ function opts() {
     left_margin_mm: currentMargins()[0],
     right_margin_mm: currentMargins()[1],
     ratios: currentRatios(),
+    vertical: $("vertical").value,
     frame: $("frame").checked,
     frame_width: $("frame_width").value,
     frame_mm: $("frame_mm").value,
@@ -1605,6 +1624,8 @@ function syncRatioInputs() {
     box.appendChild(inp);
     if (i < n - 1) box.appendChild(document.createTextNode(" : "));
   }
+  // 作り直したあとも縦書きの有効/無効を合わせる。
+  if (typeof syncVerticalInputs === "function") syncVerticalInputs();
 }
 // 比率を "7,3" 形式で返す。全て空欄/1 なら "" (ドライバに渡さない)。
 function currentRatios() {
@@ -1669,6 +1690,16 @@ function syncCableInput() {
 }
 $("cable").addEventListener("change", syncCableInput);
 syncCableInput();
+// 縦書きではラベル長と行ごとの比率が使えない (ドライバ側で排他)。
+// 値は残したまま無効にして、戻せば元どおりになるようにする。
+function syncVerticalInputs() {
+  const on = $("vertical").value !== "";
+  $("length_mm").disabled = on;
+  for (const inp of document.querySelectorAll("[data-line-ratio]")) inp.disabled = on;
+  $("ratios-note").classList.toggle("muted-off", on);
+}
+$("vertical").addEventListener("change", syncVerticalInputs);
+
 function syncFrameInput() {
   const on = $("frame").checked;
   $("frame_width").disabled = !on;
@@ -1676,6 +1707,7 @@ function syncFrameInput() {
 }
 $("frame").addEventListener("change", syncFrameInput);
 syncFrameInput();
+syncVerticalInputs();
 
 clearErrOnEdit("label-section", "msg");
 clearErrOnEdit("tpl-section", "msg");
@@ -1994,6 +2026,8 @@ function applyFormState(t) {
   $("frame").checked = !!t.frame;
   $("frame_width").value = t.frame_width || "2";
   $("frame_mm").value = t.frame_mm || "";
+  $("vertical").value = t.vertical || "";
+  syncVerticalInputs();
   $("cut").value = t.cut || "full";
   $("copies").value = t.copies || "1";
   $("cable").checked = !!t.cable;
