@@ -354,7 +354,11 @@ PROGRESS_RE = re.compile(r"^progress sent=(\d+) total=(\d+)$")
 
 
 def do_abort():
-    """印刷中のジョブをプリンタ側で止める (--abort = SOFT_RESET)。"""
+    """印刷中のジョブをプリンタ側で止める (--abort = SOFT_RESET)。
+
+    呼び出し側は CLI_LOCK を保持していること。手放してから呼ぶと、
+    待っていた次のジョブが先に走り出し、そちらを止めてしまう。
+    """
     if DRY_RUN:
         return {"ok": True, "message": "DRY_RUN: 中断は送信していません"}
     args = [DRIVER, "--model", MODEL, "--abort"]
@@ -430,9 +434,23 @@ def do_print_labels(opts, labels, cancel=None, progress=None):
         with CLI_LOCK:
             if cancel is not None and cancel.is_set():
                 return {"ok": False, "cancelled": True, "error": "送信前に取り消しました"}
-            rc, _out, err = run_driver(
-                full, timeout=CLI_TIMEOUT + 180 + 30 * len(labels), on_line=on_line, cancel=cancel
-            )
+            try:
+                rc, _out, err = run_driver(
+                    full, timeout=CLI_TIMEOUT + 180 + 30 * len(labels), on_line=on_line, cancel=cancel
+                )
+            except DriverCancelled:
+                # 送信途中で止めた。残りは送っていないが、プリンタの
+                # バッファに入ったぶんは印刷される。SOFT_RESET で止めにいく。
+                # ロックを持ったまま行うこと: 先に手放すと、待っていた次の
+                # ジョブが始まってしまい、そちらに中断が届く。
+                result = do_abort()
+                return {
+                    "ok": False,
+                    "cancelled": True,
+                    "aborted_mid_job": True,
+                    "abort_error": None if result.get("ok") else result.get("error"),
+                    "error": "印刷中に取り消しました",
+                }
         if rc != 0:
             return {"ok": False, "error": err.strip() or f"driver exited {rc}"}
         return {"ok": True, "message": "印刷しました。", "notes": notes, "detail": err.strip()}
@@ -618,16 +636,11 @@ def _merge_worker(job, labels, opts):
                 job["done"] = len(labels)
             elif r.get("cancelled"):
                 state = "cancelled"
+                job["aborted_mid_job"] = bool(r.get("aborted_mid_job"))
+                job["abort_error"] = r.get("abort_error")
             else:
                 state = "error"
                 error = r.get("error", "unknown error")
-    except DriverCancelled:
-        # 送信途中で止めた。残りのデータは送られていないが、プリンタの
-        # バッファに入ったぶんは印刷される。SOFT_RESET で止めにいく。
-        state = "cancelled"
-        job["aborted_mid_job"] = True
-        result = do_abort()
-        job["abort_error"] = None if result.get("ok") else result.get("error")
     except Exception as e:  # タイムアウト等でもジョブを「実行中」のまま残さない
         state = "error"
         error = f"{type(e).__name__}: {e}"
@@ -1965,7 +1978,11 @@ function substituteFirstValues(text) {
     const where = src === "csv" ? "CSV データ（1 行目ヘッダ + 2 行目）" : "系列リスト（各系列の 1 番目）";
     return {error: "プレースホルダ " + missing.map(n => "{{" + n + "}}").join(", ") + " の値が " + where + " にありません。差し込み印刷のデータを入力するか、プレースホルダを外してください。"};
   }
-  return {text: text.replace(PLACEHOLDER_RE_JS, (_, n) => values[n]), substituted: names};
+  // 組み込み ({{today}} など) はそのまま残す。サーバが印刷/プレビューの
+  // 時点で展開するので、ここで置き換えると undefined になる。
+  const filled = text.replace(PLACEHOLDER_RE_JS, (m, n) =>
+    BUILTIN_PLACEHOLDERS.includes(n) ? m : values[n]);
+  return {text: filled, substituted: names};
 }
 
 $("btn-preview").onclick = () => {
@@ -2324,11 +2341,14 @@ function labelCheckboxes() {
 function selectedLabels() {
   return labelCheckboxes().filter(c => c.checked).map(c => currentLabels[+c.dataset.idx]);
 }
+// 印刷を開始してから終わるまでは true。選択を変えても再実行できないように
+// するため (二重に開始すると、元のジョブを画面から止められなくなる)。
+let mergeBusy = false;
 function updateSelection() {
   const boxes = labelCheckboxes();
   const n = boxes.filter(c => c.checked).length;
   $("labels-count").textContent = labelsInfo + (boxes.length ? "（選択 " + n + " 件）" : "");
-  $("btn-merge-print").disabled = boxes.length > 0 && n === 0;
+  $("btn-merge-print").disabled = mergeBusy || (boxes.length > 0 && n === 0);
 }
 function setAllSelected(on) {
   for (const c of labelCheckboxes()) c.checked = on;
@@ -2366,15 +2386,25 @@ $("sel-range").addEventListener("keydown", e => {
 let mergeJobId = null;
 let mergePollTimer = null;
 $("btn-merge-print").onclick = async () => {
+  // ボタンは無効にしてあるが、入口でも止める: 二重に開始すると
+  // mergeJobId が上書きされ、先のジョブを画面から止められなくなる。
+  if (mergeBusy) return;
   if (!currentLabels.length) { setMsg($("merge-msg"), "印刷するには先に「ラベルを生成」を押してください", false); return; }
   const labels = selectedLabels();
   if (!labels.length) { setMsg($("merge-msg"), "印刷するラベルを選んでください", false); return; }
-  const btn = $("btn-merge-print");
-  btn.disabled = true;
+  // 開始要求を出した時点で busy。応答を待つ間に選択を変えられても、
+  // updateSelection がボタンを有効に戻さないようにする。
+  mergeBusy = true;
+  updateSelection();
   setMsg($("merge-msg"), "");
   try {
     const r = await post("/api/merge/print", {opts: opts(), labels});
-    if (!r.ok) { setMsg($("merge-msg"), "印刷を開始できませんでした: " + (r.error || ""), false); btn.disabled = false; return; }
+    if (!r.ok) {
+      setMsg($("merge-msg"), "印刷を開始できませんでした: " + (r.error || ""), false);
+      mergeBusy = false;
+      updateSelection();
+      return;
+    }
     mergeJobId = r.job_id;
     $("merge-progress").style.display = "";
     $("merge-progress-bar").max = r.total;
@@ -2385,7 +2415,8 @@ $("btn-merge-print").onclick = async () => {
     pollMergeJob();
   } catch (e) {
     setMsg($("merge-msg"), "印刷を開始できませんでした: " + e, false);
-    btn.disabled = false;
+    mergeBusy = false;
+    updateSelection();
   }
 };
 async function pollMergeJob() {
@@ -2408,7 +2439,8 @@ async function pollMergeJob() {
     clearInterval(mergePollTimer);
     mergePollTimer = null;
     mergeJobId = null;
-    $("btn-merge-print").disabled = false;
+    mergeBusy = false;
+    updateSelection();
     $("btn-merge-cancel").disabled = true;
     if (r.state === "done") setMsg($("merge-msg"), r.done + " 件を印刷しました" + (r.detail ? "\n" + r.detail : ""), true);
     else if (r.state === "cancelled") {
