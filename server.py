@@ -1214,7 +1214,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <section class="card" id="printer-section">
 <h2 id="h-printer">プリンタ</h2>
 <div class="row">
-  <button id="btn-tape-detect" type="button" aria-describedby="tape-note">装着テープを確認</button>
+  <button id="btn-tape-detect" type="button">装着テープを確認</button>
   <span id="tape-status" role="status">装着テープ: 未確認</span>
 </div>
 <div class="row">
@@ -1226,15 +1226,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button id="btn-feed-cut" type="button">送ってカット</button>
   <span id="feed-status" role="status"></span>
 </div>
-<p class="note" id="tape-note">テープ幅「自動」ではプレビュー/印刷のたびに本体から幅を取得します。</p>
 </section>
 
 <section class="card" id="preview-section">
 <h2 id="h-preview">プレビュー</h2>
-<p id="preview-empty" class="note">「プレビュー」を押すか、差し込み印刷のラベルを選んでください。</p>
+<p id="preview-empty" class="note">「プレビュー」を押すか、差し込み印刷のラベルを選択</p>
 <div id="preview-size" class="note" role="status"></div>
 <div id="preview"></div>
-<p class="note" id="ruler-note" style="display:none">枠はテープの実寸、斜線は印字されない部分、目盛りは mm の目安です。</p>
+<p class="note" id="ruler-note" style="display:none">枠はテープの実寸、斜線は印字されない部分、目盛りは mm の目安</p>
 </section>
 
 <div class="columns">
@@ -1302,7 +1301,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="fields">
   <div class="field">
     <label for="vertical">向き</label>
-    <select id="vertical" aria-describedby="vertical-note">
+    <select id="vertical">
       <option value="">横書き</option>
       <option value="stacked">縦書き</option>
       <option value="rotated">縦向き横書き</option>
@@ -1318,11 +1317,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="field">
     <label for="copies">枚数</label>
-    <input id="copies" type="number" min="1" max="99" step="1" inputmode="numeric" value="1" aria-describedby="copies-note">
+    <input id="copies" type="number" min="1" max="99" step="1" inputmode="numeric" value="1">
   </div>
 </div>
-<p class="note" id="copies-note">同じラベルを連続で印刷します。差し込み印刷では各ラベルに適用されます。</p>
-<p class="note" id="vertical-note">「縦書き」と「縦向き横書き」はテープを縦に貼る向きです。縦書きは 1 文字ずつ縦に並べ、改行で列が変わります。縦向き横書きは文字を横書きのまま、行をテープ幅方向に書きます。どちらもラベル長と行ごとの比率は使えません。</p>
 <div class="row">
   <label><input type="checkbox" id="frame"> 枠線を付ける</label>
   <div class="field inline">
@@ -1333,7 +1330,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <label for="frame_mm">横幅(mm)</label>
     <input id="frame_mm" type="number" min="1" max="500" step="0.5" inputmode="decimal" placeholder="自動" style="width: 6em" disabled>
   </div>
-  <span class="note">横幅は空欄なら文字を囲みます。指定するとラベルの中央にその幅で描きます。</span>
 </div>
 <div class="row">
   <label><input type="checkbox" id="cable"> ケーブル表示ラベル</label>
@@ -1341,18 +1337,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <label for="cable_mm">印刷エリア(mm)</label>
     <input id="cable_mm" type="number" min="1" max="50" step="0.5" inputmode="decimal" placeholder="既定" style="width: 6em" disabled>
   </div>
-  <span class="note">テープ上端の印刷エリアだけに印字します。既定は 24mm が 7.5mm、36mm が 12.5mm。はみ出すときは小さくしてください。</span>
+  <span class="note">既定の印刷エリア: 24mm 時 7.5mm、36mm 時 12.5mm</span>
 </div>
 <div class="field">
   <label for="text">印刷テキスト</label>
   <textarea id="text" rows="3" aria-describedby="text-hint" placeholder="例: HOST-A&#10;10.0.0.1"></textarea>
-  <span id="text-hint" class="note">改行で複数行になります。差し込みは {{A}} のように書きます。{{today}} {{now}} は印刷時の日時になります。</span>
+  <span id="text-hint" class="note">{{系列名}} で項目を差し込み<br>使用可能な組み込みプレースホルダー: {{today}}（日付） {{now}}（日時）</span>
 </div>
 <div class="row" role="group" aria-labelledby="ratios-label">
   <span id="ratios-label">行ごとのサイズ比率:</span>
   <span id="ratios-inputs"></span>
 </div>
-<p class="note" id="ratios-note">行ごとの文字サイズの比率（例: 2行で 7 : 3）。空欄は 1。ラベル長と併用すると折り返さず、収まらなければエラーになります。</p>
+<p class="note" id="ratios-note">ラベル長と併用時は折り返さない</p>
 <div class="section-actions">
   <div class="group">
     <button id="btn-preview" type="button">プレビュー</button>
@@ -1380,12 +1376,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button id="btn-tpl-load" type="button">読み込む</button>
   <button id="btn-tpl-delete" type="button">削除</button>
 </div>
-<p class="note">テキストも一緒に保存します。</p>
 <div class="row">
   <a class="button" id="btn-tpl-export" href="/api/templates/export" download="tepra-templates.json">ファイルに書き出す</a>
   <input type="file" id="tpl-import-file" accept=".json,application/json" class="file-input">
   <label class="button" for="tpl-import-file">ファイルから読み込む</label>
-  <span class="note">全テンプレートを JSON で書き出し/読み込みします。</span>
 </div>
 <dialog id="dlg-import" aria-labelledby="dlg-import-title">
   <h2 id="dlg-import-title">同名のテンプレートがあります</h2>
@@ -1453,7 +1447,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <label for="csv-text">CSVデータ</label>
     <textarea id="csv-text" rows="5" placeholder="A,B&#10;aa,1&#10;bb,2&#10;cc,3"></textarea>
   </div>
-  <p class="note">1行目がヘッダ（プレースホルダ名）、2行目以降が各ラベルです。文字コードは自動判定します。</p>
+  <p class="note">1行目がヘッダ（プレースホルダ名）、2行目以降が項目</p>
 </div>
 <div id="src-series" style="display:none">
   <fieldset>
@@ -1466,8 +1460,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
   </fieldset>
   <div id="series-inputs"></div>
-  <p class="note">各系列は1行1要素。対応付けは短い系列の長さに合わせます。追加した系列の名前はテキスト欄で {{名前}} として使います。</p>
-</div>
+  </div>
 <div class="row">
   <button id="btn-labels" type="button">ラベルを生成</button>
   <span id="labels-count" role="status"></span>
@@ -1497,7 +1490,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span id="merge-progress-text" role="status"></span>
     <button id="btn-merge-cancel" type="button">キャンセル</button>
   </div>
-  <p class="note">選択したラベルを 1 ジョブで送ります。キャンセルすると、送信前なら印刷されず、送信中なら残りを送らずにプリンタを止めます。</p>
 </div>
 <div id="merge-msg" class="msg" role="status"></div>
 <dialog id="dlg-seq" aria-labelledby="dlg-seq-title">
@@ -1538,7 +1530,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button id="btn-history-clear" type="button">履歴を削除</button>
 </div>
 <div id="history-list"></div>
-<p class="note">直近 100 件。「読み込む」で設定とテキストをフォームに戻します。「再印刷」はそのまま印刷します。</p>
+<p class="note">直近 100 件</p>
 <dialog id="dlg-history-clear" aria-labelledby="dlg-history-clear-title">
   <h2 id="dlg-history-clear-title">印刷履歴をすべて削除しますか？</h2>
   <p>削除した履歴は元に戻せません。</p>
@@ -2522,7 +2514,7 @@ async function loadHistory() {
   } catch (e) { return; }
   list.innerHTML = "";
   if (!hist.length) {
-    list.innerHTML = '<p class="note">履歴はまだありません。印刷するとここに残ります。</p>';
+    list.innerHTML = '<p class="note">履歴はまだありません</p>';
     return;
   }
   for (const entry of hist) {
