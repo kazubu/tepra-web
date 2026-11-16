@@ -125,6 +125,12 @@ def build_driver_args(opts):
     length_mm = "" if vertical else opts.get("length_mm", "")
     if length_mm not in ("", None):
         args += ["--max-tape-length-mm", str(length_mm)]
+    for key, flag in (("top_margin", "--top-margin"), ("bottom_margin", "--bottom-margin")):
+        value = str(opts.get(key, "") or "").strip()
+        if value:
+            # テープ幅方向の非印字マージン (ドット)。空ならドライバ既定
+            # (上 2 / 下 0)。縦向きの印字範囲もこれで決まる。
+            args += [flag, value]
     for key, flag in (("left_margin_mm", "--left-margin-mm"), ("right_margin_mm", "--right-margin-mm")):
         value = str(opts.get(key, "") or "").strip()
         if value:
@@ -1297,6 +1303,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <label for="right_margin_mm">右余白(mm)</label>
     <input id="right_margin_mm" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="3" disabled>
   </div>
+  <div class="field">
+    <label for="top_margin">上余白(ドット)</label>
+    <input id="top_margin" type="number" min="0" max="200" step="1" inputmode="numeric" placeholder="2">
+  </div>
+  <div class="field">
+    <label for="bottom_margin">下余白(ドット)</label>
+    <input id="bottom_margin" type="number" min="0" max="200" step="1" inputmode="numeric" placeholder="0">
+  </div>
 </div>
 <div class="fields">
   <div class="field">
@@ -1558,6 +1572,8 @@ function opts() {
     align: $("align").value,
     length_mm: $("length_mm").value,
     margin_preset: $("margin_preset").value,
+    top_margin: $("top_margin").value,
+    bottom_margin: $("bottom_margin").value,
     left_margin_mm: currentMargins()[0],
     right_margin_mm: currentMargins()[1],
     ratios: currentRatios(),
@@ -2032,6 +2048,8 @@ function applyFormState(t) {
   $("align").value = t.align || "left";
   $("length_mm").value = t.length_mm || "";
   applyMargins(t.margin_preset, t.left_margin_mm, t.right_margin_mm);
+  $("top_margin").value = t.top_margin || "";
+  $("bottom_margin").value = t.bottom_margin || "";
   $("frame").checked = !!t.frame;
   $("frame_width").value = t.frame_width || "2";
   $("frame_mm").value = t.frame_mm || "";
