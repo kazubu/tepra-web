@@ -1,0 +1,28 @@
+[Unit]
+Description=TEPRA Web printing server
+Documentation=https://github.com/kazubu/tepra-web
+After=network.target
+
+[Service]
+Type=simple
+User=tepra-web
+# プリンタの USB デバイスノードは udev ルールで lp グループに開けている
+Group=lp
+WorkingDirectory=/var/lib/tepra-web
+EnvironmentFile=/etc/tepra-web/tepra-web.conf
+ExecStart=/usr/bin/python3 /usr/lib/tepra-web/server.py
+Restart=on-failure
+RestartSec=2
+
+# 書き込みを許すのはデータ置き場だけ。USB を触るので PrivateDevices は付けない。
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tepra-web
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

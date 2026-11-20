@@ -1,0 +1,7 @@
+# TEPRA (KING JIM) のラベルプリンタを lp グループから使えるようにする。
+# tepra-web サービスは Group=lp で動く。手元の CLI から使うなら
+#   sudo usermod -aG lp $USER
+# のうえで入り直すこと。
+#
+# vendor 0d8a は KING JIM。製品 ID は機種ごとに違うので指定しない。
+SUBSYSTEM=="usb", ATTR{idVendor}=="0d8a", GROUP="lp", MODE="0660"

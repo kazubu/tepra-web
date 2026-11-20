@@ -1,0 +1,87 @@
+name: deb
+
+# .deb を組み立て、ランナー上で実際に install してサービスが上がるところ
+# まで確かめる。タグ (v1.2.3) を押したときはリリースに添付する。
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # ドライバはサブモジュール。バージョンは git describe で決めるので
+          # タグが要る。
+          submodules: recursive
+          fetch-depth: 0
+
+      # cargo と python3 はランナーに入っているので入れ直さない。
+      - name: Test the driver
+        run: cargo test --release --manifest-path driver/Cargo.toml
+
+      - name: Check server.py and its inline JavaScript parse
+        run: |
+          python3 -m py_compile server.py
+          python3 - <<'PY'
+          import io, re
+          s = io.open("server.py", encoding="utf-8").read()
+          io.open("ui.js", "w", encoding="utf-8").write(
+              "\n".join(re.findall(r"<script>(.*?)</script>", s, re.S)))
+          PY
+          node --check ui.js
+
+      - name: Build the package
+        run: packaging/build-deb.sh
+
+      - name: Install it and check the service comes up
+        run: |
+          set -eux
+          sudo apt-get install -y ./dist/*.deb
+          systemctl is-enabled tepra-web
+          systemctl is-active tepra-web
+          # プリンタは無いが、画面と API は答えるはず
+          curl -fsS --retry 5 --retry-connrefused http://127.0.0.1:8080/api/config
+          test -d /var/lib/tepra-web/fonts
+          getent passwd tepra-web
+
+      - name: Purge it and check nothing is left behind
+        run: |
+          set -eux
+          sudo apt-get purge -y tepra-web
+          ! systemctl is-enabled tepra-web
+          ! test -e /var/lib/tepra-web
+          ! getent passwd tepra-web
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tepra-web-deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tepra-web-deb
+          path: dist
+      - name: Attach the package to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eux
+          gh release create "$GITHUB_REF_NAME" dist/*.deb --generate-notes \
+            || gh release upload "$GITHUB_REF_NAME" dist/*.deb --clobber

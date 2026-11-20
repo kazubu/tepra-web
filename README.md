@@ -71,6 +71,35 @@ Linux サーバに USB 接続したキングジム テプラ (SR3900P 想定) �
 - Python 3.8 以降 (標準ライブラリのみ)
 - プリンタを USB 接続し、`lsusb` コマンドが使えること
 
+## .deb でインストールする
+
+GitHub Actions が `.deb` を作ります。タグ (`v1.2.3`) を押すとリリースに
+添付され、それ以外のコミットでも Actions の成果物として取れます。手元で
+作るなら `packaging/build-deb.sh` (cargo, dpkg-deb, fakeroot が要ります)。
+
+```bash
+sudo apt install ./tepra-web_*.deb
+```
+
+インストールすると次の状態になります。
+
+- `tepra-web.service` が有効化されて起動し、**8080 番**で待ち受けます
+  (`http://<ホスト>:8080/`)。再起動後も自動で上がります。
+- `tepra-web` システムユーザが作られ、`lp` グループ権限で動きます。
+  udev ルール (`/usr/lib/udev/rules.d/99-tepra.rules`) が KING JIM の
+  USB デバイスを `lp` グループに開けます。手元の CLI からも使うなら
+  `sudo usermod -aG lp $USER` を実行して入り直してください。
+- 設定は `/etc/tepra-web/tepra-web.conf` です。機種 (`TEPRA_MODEL`)、
+  ポート、USB Product ID などを書き換えて `sudo systemctl restart
+  tepra-web`。このファイルは conffile なので、アップグレードしても
+  編集は残ります。
+- 印刷履歴・テンプレート・追加フォントは `/var/lib/tepra-web/` です。
+  `apt purge` するとここも消えます。
+- 追加フォントは `/var/lib/tepra-web/fonts/` に置きます (BIZ UDP ゴシックは
+  ドライバに埋め込まれているので、何も置かなくても使えます)。
+
+手動で配置する場合は以下を参照してください。
+
 ## インストール手順
 
 ### 1. ドライバのビルド
