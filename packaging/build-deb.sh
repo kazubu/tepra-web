@@ -30,7 +30,22 @@ if [ ! -f "$root/driver/Cargo.toml" ]; then
     echo "driver/ is empty: run git submodule update --init" >&2
     exit 1
 fi
+
+# 配るバイナリはどの x86-64 でも動くようにする。libusb はこのビルドの中で
+# C からコンパイルされるので、ビルド機の gcc が x86-64-v2/v3 を既定にして
+# いると AVX が入り、CPU モデルを絞った VM や古い機械で SIGILL になる
+# (libusb_set_option の可変長引数の退避が vmovaps になって落ちた実例あり)。
+if [ "$arch" = "amd64" ]; then
+    # 環境の指定より後ろに置く: 最後の -march が効くので、配布用の
+    # ビルドではこちらが勝つ
+    CFLAGS="${CFLAGS:-} -march=x86-64 -mtune=generic"
+    RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=x86-64"
+    export CFLAGS RUSTFLAGS
+fi
+
 cargo build --release --manifest-path "$root/driver/Cargo.toml"
+
+bin="$root/driver/target/release/tpsr3700"
 
 # --- ツリーを組む -----------------------------------------------------
 stage=$(mktemp -d)
@@ -47,7 +62,7 @@ install -d "$stage/usr/lib/tepra-web" \
            "$stage/usr/share/doc/tepra-web" \
            "$stage/DEBIAN"
 
-install -m 0755 "$root/driver/target/release/tpsr3700" "$stage/usr/lib/tepra-web/tpsr3700"
+install -m 0755 "$bin" "$stage/usr/lib/tepra-web/tpsr3700"
 install -m 0644 "$root/server.py" "$stage/usr/lib/tepra-web/server.py"
 install -m 0644 "$here/tepra-web.conf" "$stage/etc/tepra-web/tepra-web.conf"
 install -m 0644 "$here/tepra-web.service" "$stage/usr/lib/systemd/system/tepra-web.service"
