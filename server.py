@@ -95,9 +95,11 @@ def build_driver_args(opts):
     vertical = str(opts.get("vertical", "") or "").strip()
     if vertical not in ("stacked", "rotated"):
         vertical = ""
-    font = opts.get("font", "")
-    if font:
-        args += ["--font", str(Path(FONTS_DIR) / font)]
+    font_path, font_index = resolve_font(opts.get("font", ""))
+    if font_path is not None:
+        args += ["--font", str(font_path)]
+        if font_index:
+            args += ["--font-index", str(font_index)]
     size = opts.get("size", "")
     if size not in ("", None):
         args += ["--size", str(size)]
@@ -802,13 +804,104 @@ def labels_from_series(template_text, series, mode):
     return labels, combos, meta, matrix
 
 
+FONT_SUFFIXES = (".ttf", ".otf", ".ttc")
+
+
+def font_faces(path):
+    """フォントファイルの書体名を [(索引, 表示名), ...] で返す。
+
+    .ttc は複数の書体を持つ (Noto Sans CJK は日本語・韓国語・等幅など
+    10 面入り)。name テーブルから「ファミリー名 スタイル」を読む。
+    読めないものはファイル名のままにして、一覧から落とさない。
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return [(0, path.name)]
+
+    def u16(o):
+        return int.from_bytes(data[o:o + 2], "big")
+
+    def u32(o):
+        return int.from_bytes(data[o:o + 4], "big")
+
+    try:
+        if data[:4] == b"ttcf":
+            offsets = [u32(12 + 4 * i) for i in range(u32(8))]
+        else:
+            offsets = [0]
+        out = []
+        for index, off in enumerate(offsets):
+            names = {}
+            for i in range(u16(off + 4)):
+                rec = off + 12 + 16 * i
+                if data[rec:rec + 4] != b"name":
+                    continue
+                table = u32(rec + 8)
+                storage = table + u16(table + 4)
+                for j in range(u16(table + 2)):
+                    r = table + 6 + 12 * j
+                    platform, _enc, lang, name_id = (u16(r), u16(r + 2), u16(r + 4), u16(r + 6))
+                    length, offset = u16(r + 8), u16(r + 10)
+                    raw = data[storage + offset:storage + offset + length]
+                    try:
+                        text = raw.decode("utf-16-be") if platform == 3 else raw.decode("latin-1")
+                    except (UnicodeDecodeError, ValueError):
+                        continue
+                    names.setdefault((name_id, lang), text)
+
+            def pick(*ids):
+                # 英語 (0x409) を優先し、無ければ何でも
+                for name_id in ids:
+                    for lang in (0x409, 0x411, 0):
+                        if (name_id, lang) in names:
+                            return names[(name_id, lang)]
+                    for (n, _l), value in names.items():
+                        if n == name_id:
+                            return value
+                return ""
+
+            family = pick(16, 1)
+            style = pick(17, 2)
+            label = " ".join(x for x in (family, style) if x).strip()
+            out.append((index, label or f"{path.name} #{index}"))
+        return out or [(0, path.name)]
+    except (IndexError, ValueError):
+        return [(0, path.name)]
+
+
 def list_fonts():
+    """画面のフォント欄に出す一覧。file は "ファイル名#面番号"。"""
     fonts = [{"name": "（バンドル）BIZ UDPゴシック", "file": ""}]
     if FONTS_DIR.is_dir():
         for p in sorted(FONTS_DIR.iterdir()):
-            if p.suffix.lower() in (".ttf", ".otf", ".ttc"):
-                fonts.append({"name": p.name, "file": p.name})
+            if p.suffix.lower() not in FONT_SUFFIXES:
+                continue
+            for index, label in font_faces(p):
+                fonts.append({"name": label, "file": f"{p.name}#{index}"})
     return fonts
+
+
+def resolve_font(value):
+    """opts の font を (パス, 面番号) にする。無効なら (None, 0)。
+
+    値はファイル名のみを受け付ける (パスは受け付けない)。実在する
+    フォントに限るので、他のファイルを読ませることはできない。
+    """
+    value = str(value or "").strip()
+    if not value:
+        return None, 0
+    name, _, index = value.partition("#")
+    try:
+        index = int(index) if index else 0
+    except ValueError:
+        index = 0
+    if Path(name).name != name:
+        return None, 0
+    path = FONTS_DIR / name
+    if path.suffix.lower() not in FONT_SUFFIXES or not path.is_file():
+        return None, 0
+    return path, max(index, 0)
 
 
 # ---------------------------------------------------------------------
@@ -1142,6 +1235,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .col { container-type: inline-size; }
   .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5em; margin: .6em 0; }
   .fields .field { margin-block: 0; min-width: 0; }
+  /* 書体名は長い (Noto Sans Mono CJK JP Regular など) ので 2 列分 */
+  .fields .field.wide { grid-column: span 2; }
   @container (min-width: 560px) {
     .fields { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   }
@@ -1261,22 +1356,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <option value="36">36mm</option>
     </select>
   </div>
-  <div class="field">
+  <div class="field wide">
     <label for="font">フォント</label>
     <select id="font"></select>
   </div>
   <div class="field">
     <label for="size">サイズ(pt)</label>
     <input id="size" type="number" min="1" max="200" step="0.5" inputmode="decimal" placeholder="自動">
-  </div>
-  <div class="field">
-    <label for="align">配置</label>
-    <select id="align" aria-describedby="align-hint">
-      <option value="left">左</option>
-      <option value="center">中央</option>
-      <option value="right">右</option>
-    </select>
-    <span id="align-hint" class="visually-hidden">複数行、またはラベル長を指定したときに各行を揃えます</span>
   </div>
 </div>
 <div class="fields">
@@ -1313,6 +1399,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 <div class="fields">
+  <div class="field">
+    <label for="align">配置</label>
+    <select id="align" aria-describedby="align-hint">
+      <option value="left">左</option>
+      <option value="center">中央</option>
+      <option value="right">右</option>
+    </select>
+    <span id="align-hint" class="visually-hidden">複数行、またはラベル長を指定したときに各行を揃えます</span>
+  </div>
   <div class="field">
     <label for="vertical">向き</label>
     <select id="vertical">
