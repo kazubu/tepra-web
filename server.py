@@ -1235,10 +1235,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .col { container-type: inline-size; }
   .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5em; margin: .6em 0; }
   .fields .field { margin-block: 0; min-width: 0; }
-  /* 書体名は長い (Noto Sans Mono CJK JP Regular など) ので 2 列分 */
-  .fields .field.wide { grid-column: span 2; }
+  /* 書体名は長い (Noto Sans Mono CJK JP Regular など) ので、フォントが
+     入る先頭の列だけ倍幅にする。 */
+  .fields.with-font { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   @container (min-width: 560px) {
     .fields { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    /* 文字の行と余白の行は、どちらも右端まで使って幅を揃える。余った幅は
+       どちらも先頭の欄 (フォント / 余白プリセット) が引き取る。数値欄は
+       2〜4 桁しか入らないので固定幅のまま。 */
+    .fields.with-font {
+      grid-template-columns: minmax(0, 2.4fr) minmax(0, 0.9fr) minmax(0, 0.9fr);
+    }
+    .fields.margins { grid-template-columns: minmax(0, 1fr) repeat(4, 6em); }
+    /* ラベルの大きさの行は半分の幅まで。余りはテープ幅と向きが引き取る。 */
+    .fields.compact {
+      grid-template-columns: 7em 7.5em 9em;
+    }
   }
   .field > label { font-size: .9em; }
   /* ボタンと高さを揃える (欄名が上にあるぶん、行の中で下端を合わせる) */
@@ -1342,7 +1354,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <section class="card" id="label-section">
 <h2 id="h-label">ラベル</h2>
-<div class="fields">
+<div class="fields compact">
   <div class="field">
     <label for="tape">テープ幅</label>
     <select id="tape">
@@ -1356,7 +1368,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <option value="36">36mm</option>
     </select>
   </div>
-  <div class="field wide">
+  <div class="field">
+    <label for="length_mm">ラベル長(mm)</label>
+    <input id="length_mm" type="number" min="10" max="500" inputmode="decimal" placeholder="指定なし">
+  </div>
+  <div class="field">
+    <label for="vertical">向き</label>
+    <select id="vertical">
+      <option value="">横書き</option>
+      <option value="stacked">縦書き</option>
+      <option value="rotated">縦向き横書き</option>
+    </select>
+  </div>
+</div>
+<div class="fields with-font">
+  <div class="field">
     <label for="font">フォント</label>
     <select id="font"></select>
   </div>
@@ -1364,12 +1390,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <label for="size">サイズ(pt)</label>
     <input id="size" type="number" min="1" max="200" step="0.5" inputmode="decimal" placeholder="自動">
   </div>
-</div>
-<div class="fields">
   <div class="field">
-    <label for="length_mm">ラベル長(mm)</label>
-    <input id="length_mm" type="number" min="10" max="500" inputmode="decimal" placeholder="指定なし">
+    <label for="align">配置</label>
+    <select id="align" aria-describedby="align-hint">
+      <option value="left">左</option>
+      <option value="center">中央</option>
+      <option value="right">右</option>
+    </select>
+    <span id="align-hint" class="visually-hidden">複数行、またはラベル長を指定したときに各行を揃えます</span>
   </div>
+</div>
+<div class="fields margins">
   <div class="field">
     <label for="margin_preset">余白</label>
     <select id="margin_preset">
@@ -1396,37 +1427,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div class="field">
     <label for="bottom_margin">下余白(ドット)</label>
     <input id="bottom_margin" type="number" min="0" max="200" step="1" inputmode="numeric" placeholder="0">
-  </div>
-</div>
-<div class="fields">
-  <div class="field">
-    <label for="align">配置</label>
-    <select id="align" aria-describedby="align-hint">
-      <option value="left">左</option>
-      <option value="center">中央</option>
-      <option value="right">右</option>
-    </select>
-    <span id="align-hint" class="visually-hidden">複数行、またはラベル長を指定したときに各行を揃えます</span>
-  </div>
-  <div class="field">
-    <label for="vertical">向き</label>
-    <select id="vertical">
-      <option value="">横書き</option>
-      <option value="stacked">縦書き</option>
-      <option value="rotated">縦向き横書き</option>
-    </select>
-  </div>
-  <div class="field">
-    <label for="cut">カット</label>
-    <select id="cut">
-      <option value="full">フルカット</option>
-      <option value="half">ハーフカット</option>
-      <option value="none">カットしない</option>
-    </select>
-  </div>
-  <div class="field">
-    <label for="copies">枚数</label>
-    <input id="copies" type="number" min="1" max="99" step="1" inputmode="numeric" value="1">
   </div>
 </div>
 <div class="row">
@@ -1458,6 +1458,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <span id="ratios-inputs"></span>
 </div>
 <p class="note" id="ratios-note">ラベル長と併用時は折り返さない</p>
+<div class="fields">
+  <div class="field">
+    <label for="cut">カット</label>
+    <select id="cut">
+      <option value="full">フルカット</option>
+      <option value="half">ハーフカット</option>
+      <option value="none">カットしない</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="copies">枚数</label>
+    <input id="copies" type="number" min="1" max="99" step="1" inputmode="numeric" value="1">
+  </div>
+</div>
 <div class="section-actions">
   <div class="group">
     <button id="btn-preview" type="button">プレビュー</button>
